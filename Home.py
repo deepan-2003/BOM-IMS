@@ -10,10 +10,9 @@ import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
 
 st.set_page_config(
-    page_title="Bharathi Oil Mill",
-    page_icon="🏭",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    page_title="Bharathi Oil Mills",
+    page_icon="assets/bom.png",
+    layout="wide"
 )
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
@@ -74,17 +73,18 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 """, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="page-header">
-  <div style="display:flex; align-items:center; gap:16px">
-    <span class="mill-logo">🏭</span>
-    <div>
-      <p class="mill-title">Bharathi Oil Mill</p>
-      <p class="mill-sub">Traditional Cold-Press & Milling Services · Management System</p>
-    </div>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+col1, col2 = st.columns([1, 6])
+
+with col1:
+    st.image("assets/bom_logo.jpeg", width=85)
+
+with col2:
+    st.markdown("""
+    <p class="mill-title">Bharathi Oil Mills</p>
+    <p class="mill-sub">
+        Traditional Cold-Press & Milling Services · Management System
+    </p>
+    """, unsafe_allow_html=True)
 
 # ── DB Init ───────────────────────────────────────────────────────────────────
 try:

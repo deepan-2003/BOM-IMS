@@ -1,0 +1,2473 @@
+========================================================================================================================
+PROJECT CODE EXPORT
+========================================================================================================================
+
+
+========================================================================================================================
+FILE: database.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\database.py
+RELATIVE_PATH: database.py
+EXTENSION: .py
+========================================================================================================================
+
+"""
+Database initialization and connection management for Bharathi Oil Mill
+Supports both Supabase (PostgreSQL) and local PostgreSQL
+"""
+
+import psycopg2
+import psycopg2.extras
+import streamlit as st
+from contextlib import contextmanager
+import os
+
+
+def get_connection():
+    """Get database connection from Streamlit secrets or environment variables."""
+    db_url = st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if db_url:
+        conn = psycopg2.connect(db_url)
+    else:
+        conn = psycopg2.connect(
+            host=st.secrets.get("DB_HOST", "localhost"),
+            port=st.secrets.get("DB_PORT", 5432),
+            database=st.secrets.get("DB_NAME", "bharathi_oil_mill"),
+            user=st.secrets.get("DB_USER", "postgres"),
+            password=st.secrets.get("DB_PASSWORD", "password"),
+        )
+    return conn
+
+
+@contextmanager
+def get_db():
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def init_db():
+    """Initialize all database tables."""
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        # ── Services / Mill Services ──────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS services (
+                id SERIAL PRIMARY KEY,
+                category VARCHAR(50) NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                rate_per_kg DECIMAL(10,2) NOT NULL,
+                unit VARCHAR(20) DEFAULT 'kg',
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Customers ─────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100),
+                phone VARCHAR(15),
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Bills (POS) ───────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bills (
+                id SERIAL PRIMARY KEY,
+                bill_number VARCHAR(20) UNIQUE NOT NULL,
+                customer_id INTEGER REFERENCES customers(id),
+                customer_name VARCHAR(100),
+                customer_phone VARCHAR(15),
+                subtotal DECIMAL(10,2) DEFAULT 0,
+                discount DECIMAL(10,2) DEFAULT 0,
+                total DECIMAL(10,2) DEFAULT 0,
+                payment_method VARCHAR(20),
+                payment_status VARCHAR(20) DEFAULT 'paid',
+                reminder_date DATE,
+                notes TEXT,
+                bill_type VARCHAR(30) DEFAULT 'service',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Bill Items ────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bill_items (
+                id SERIAL PRIMARY KEY,
+                bill_id INTEGER REFERENCES bills(id) ON DELETE CASCADE,
+                service_id INTEGER REFERENCES services(id),
+                service_name VARCHAR(100),
+                quantity_kg DECIMAL(10,3),
+                rate_per_kg DECIMAL(10,2),
+                amount DECIMAL(10,2),
+                notes TEXT
+            );
+        """)
+
+        # ── Oil Processing (oil cake buy-back) ────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS oil_processing (
+                id SERIAL PRIMARY KEY,
+                bill_id INTEGER REFERENCES bills(id) ON DELETE CASCADE,
+                seed_type VARCHAR(50),
+                input_kg DECIMAL(10,3),
+                processing_rate DECIMAL(10,2),
+                processing_fee DECIMAL(10,2),
+                oil_cake_kg DECIMAL(10,3),
+                oil_cake_rate DECIMAL(10,2),
+                oil_cake_value DECIMAL(10,2),
+                net_amount DECIMAL(10,2),
+                direction VARCHAR(10)
+            );
+        """)
+
+        # ── Inventory ─────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id SERIAL PRIMARY KEY,
+                item_name VARCHAR(100) NOT NULL,
+                category VARCHAR(50),
+                quantity DECIMAL(10,3) DEFAULT 0,
+                unit VARCHAR(20) DEFAULT 'kg',
+                rate_per_unit DECIMAL(10,2) DEFAULT 0,
+                reorder_level DECIMAL(10,3) DEFAULT 0,
+                notes TEXT,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Inventory Transactions ────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_transactions (
+                id SERIAL PRIMARY KEY,
+                inventory_id INTEGER REFERENCES inventory(id),
+                transaction_type VARCHAR(20),
+                quantity DECIMAL(10,3),
+                rate DECIMAL(10,2),
+                total_value DECIMAL(10,2),
+                reference_bill VARCHAR(20),
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Labourers ─────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS labourers (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                phone VARCHAR(15),
+                daily_wage DECIMAL(10,2) DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Labour Attendance ─────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS labour_attendance (
+                id SERIAL PRIMARY KEY,
+                labourer_id INTEGER REFERENCES labourers(id),
+                work_date DATE NOT NULL,
+                present BOOLEAN DEFAULT TRUE,
+                days_worked DECIMAL(4,2) DEFAULT 1.0,
+                wage_paid DECIMAL(10,2) DEFAULT 0,
+                advance DECIMAL(10,2) DEFAULT 0,
+                payment_method VARCHAR(20) DEFAULT 'cash',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Machines ──────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS machines (
+                id SERIAL PRIMARY KEY,
+                machine_name VARCHAR(100) NOT NULL,
+                machine_type VARCHAR(50),
+                serial_number VARCHAR(50),
+                purchase_date DATE,
+                last_service_date DATE,
+                next_service_date DATE,
+                status VARCHAR(20) DEFAULT 'active',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Machine Maintenance ───────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS machine_maintenance (
+                id SERIAL PRIMARY KEY,
+                machine_id INTEGER REFERENCES machines(id),
+                maintenance_date DATE NOT NULL,
+                maintenance_type VARCHAR(50),
+                description TEXT,
+                cost DECIMAL(10,2) DEFAULT 0,
+                technician VARCHAR(100),
+                next_service_date DATE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Expenses ──────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS expenses (
+                id SERIAL PRIMARY KEY,
+                expense_date DATE NOT NULL,
+                category VARCHAR(50),
+                description TEXT,
+                amount DECIMAL(10,2),
+                payment_method VARCHAR(20) DEFAULT 'cash',
+                reference VARCHAR(50),
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+
+        # ── Seed default services ─────────────────────────────────────────────
+        cur.execute("SELECT COUNT(*) FROM services")
+        count = cur.fetchone()[0]
+        if count == 0:
+            default_services = [
+                # Grain milling
+                ('grain_milling', 'Wheat Milling', 2.50, 'kg'),
+                ('grain_milling', 'Rice Milling', 2.00, 'kg'),
+                ('grain_milling', 'Kambu (Pearl Millet) Milling', 2.50, 'kg'),
+                ('grain_milling', 'Kezhvaragu (Ragi) Milling', 2.50, 'kg'),
+                ('grain_milling', 'Corn Milling', 2.00, 'kg'),
+                # Spice grinding
+                ('spice_grinding', 'Chilli Powder Grinding', 5.00, 'kg'),
+                ('spice_grinding', 'Masala Powder Grinding (Mix)', 5.00, 'kg'),
+                ('spice_grinding', 'Coriander Powder Grinding', 4.50, 'kg'),
+                # Dhal splitting
+                ('dhal_splitting', 'Ulunthu (Urad) Splitting', 3.00, 'kg'),
+                ('dhal_splitting', 'Toor Dhal Splitting', 3.00, 'kg'),
+                # Oil extraction
+                ('oil_extraction', 'Groundnut Oil Extraction', 8.00, 'kg'),
+                ('oil_extraction', 'Sesame Oil Extraction', 10.00, 'kg'),
+                ('oil_extraction', 'Coconut Oil Extraction', 7.00, 'kg'),
+                ('oil_extraction', 'Ilupai (Mahua) Oil Extraction', 8.00, 'kg'),
+                ('oil_extraction', 'Neem Oil Extraction', 8.00, 'kg'),
+                ('oil_extraction', 'Castor Oil Extraction', 9.00, 'kg'),
+                # Oil cake grinding
+                ('oil_cake_grinding', 'Oil Cake Grinding', 3.00, 'kg'),
+                # Wet grinding
+                ('wet_grinding', 'Idiyappam Rice Grinding', 4.00, 'kg'),
+                ('wet_grinding', 'Idli/Dosa Batter Grinding', 3.50, 'kg'),
+            ]
+            for svc in default_services:
+                cur.execute(
+                    "INSERT INTO services (category, name, rate_per_kg, unit) VALUES (%s, %s, %s, %s)",
+                    svc
+                )
+
+        # ── Seed default inventory items ──────────────────────────────────────
+        cur.execute("SELECT COUNT(*) FROM inventory")
+        count = cur.fetchone()[0]
+        if count == 0:
+            default_inventory = [
+                ('Groundnut Oil Cake', 'oil_cake', 0, 'kg', 12.00),
+                ('Sesame Oil Cake', 'oil_cake', 0, 'kg', 10.00),
+                ('Coconut Oil Cake', 'oil_cake', 0, 'kg', 8.00),
+                ('Ilupai Oil Cake', 'oil_cake', 0, 'kg', 6.00),
+                ('Neem Oil Cake', 'oil_cake', 0, 'kg', 5.00),
+                ('Groundnut Oil (Retail)', 'oil_product', 0, 'litre', 180.00),
+                ('Sesame Oil (Retail)', 'oil_product', 0, 'litre', 220.00),
+                ('Coconut Oil (Retail)', 'oil_product', 0, 'litre', 160.00),
+                ('Packing Covers', 'supplies', 100, 'pcs', 2.00),
+            ]
+            for item in default_inventory:
+                cur.execute(
+                    "INSERT INTO inventory (item_name, category, quantity, unit, rate_per_unit) VALUES (%s,%s,%s,%s,%s)",
+                    item
+                )
+
+        # ── Seed default machines ─────────────────────────────────────────────
+        cur.execute("SELECT COUNT(*) FROM machines")
+        count = cur.fetchone()[0]
+        if count == 0:
+            default_machines = [
+                ('Flour Mill #1', 'grain_milling', 'active'),
+                ('Flour Mill #2', 'grain_milling', 'active'),
+                ('Spice Grinder #1', 'spice_grinding', 'active'),
+                ('Dhal Splitter #1', 'dhal_splitting', 'active'),
+                ('Oil Rotary #1 - Groundnut', 'oil_extraction', 'active'),
+                ('Oil Rotary #2 - Sesame', 'oil_extraction', 'active'),
+                ('Oil Rotary #3 - Coconut', 'oil_extraction', 'active'),
+                ('Oil Rotary #4 - Ilupai', 'oil_extraction', 'active'),
+                ('Oil Rotary #5 - Multi', 'oil_extraction', 'active'),
+                ('Oil Rotary #6 - Multi', 'oil_extraction', 'active'),
+                ('Oil Cake Grinder #1', 'oil_cake_grinding', 'active'),
+                ('Wet Grinder #1 - Idiyappam', 'wet_grinding', 'active'),
+            ]
+            for m in default_machines:
+                cur.execute(
+                    "INSERT INTO machines (machine_name, machine_type, status) VALUES (%s,%s,%s)",
+                    m
+                )
+
+        conn.commit()
+        print("✅ Database initialized successfully.")
+
+
+def generate_bill_number():
+    """Generate sequential bill number like BOM-20241114-0001"""
+    from datetime import date
+    today = date.today().strftime("%Y%m%d")
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM bills WHERE bill_number LIKE %s",
+            (f"BOM-{today}-%",)
+        )
+        count = cur.fetchone()[0]
+    return f"BOM-{today}-{count+1:04d}"
+
+
+
+========================================================================================================================
+FILE: export.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\export.py
+RELATIVE_PATH: export.py
+EXTENSION: .py
+========================================================================================================================
+
+import os
+from pathlib import Path
+
+# Folder to scan
+SOURCE_FOLDER = r"C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill"
+
+# Output file
+OUTPUT_FILE = "project_code_dump.txt"
+
+# Code file extensions
+CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx",
+    ".java", ".cs", ".cpp", ".c", ".h",
+    ".php", ".go", ".rs", ".swift",
+    ".html", ".css", ".scss",
+    ".sql", ".json", ".yaml", ".yml",
+    ".xml", ".sh", ".bat", ".ps1",
+    ".dart", ".kt", ".vue"
+}
+
+with open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
+
+    outfile.write("=" * 120 + "\n")
+    outfile.write("PROJECT CODE EXPORT\n")
+    outfile.write("=" * 120 + "\n\n")
+
+    for root, dirs, files in os.walk(SOURCE_FOLDER):
+
+        # Ignore common folders
+        dirs[:] = [
+            d for d in dirs
+            if d not in {
+                ".git",
+                ".venv",
+                "venv",
+                "__pycache__",
+                "node_modules",
+                ".next",
+                "dist",
+                "build"
+            }
+        ]
+
+        for file in files:
+
+            filepath = os.path.join(root, file)
+            ext = Path(file).suffix.lower()
+
+            if ext not in CODE_EXTENSIONS:
+                continue
+
+            try:
+                relative_path = os.path.relpath(
+                    filepath,
+                    SOURCE_FOLDER
+                )
+
+                with open(
+                    filepath,
+                    "r",
+                    encoding="utf-8",
+                    errors="ignore"
+                ) as f:
+                    content = f.read()
+
+                outfile.write("\n")
+                outfile.write("=" * 120 + "\n")
+                outfile.write(f"FILE: {file}\n")
+                outfile.write(f"PATH: {filepath}\n")
+                outfile.write(f"RELATIVE_PATH: {relative_path}\n")
+                outfile.write(f"EXTENSION: {ext}\n")
+                outfile.write("=" * 120 + "\n\n")
+
+                outfile.write(content)
+                outfile.write("\n\n")
+
+            except Exception as e:
+                outfile.write(
+                    f"\nERROR READING {filepath}: {str(e)}\n"
+                )
+
+print(f"Export completed: {OUTPUT_FILE}")
+
+
+========================================================================================================================
+FILE: Home.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\Home.py
+RELATIVE_PATH: Home.py
+EXTENSION: .py
+========================================================================================================================
+
+"""
+Bharathi Oil Mill — Home Dashboard
+Run with: streamlit run Home.py
+"""
+
+import streamlit as st
+import psycopg2.extras
+from datetime import date, timedelta
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), ".")))
+
+st.set_page_config(
+    page_title="Bharathi Oil Mill",
+    page_icon="🏭",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Global CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Global */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+/* Sidebar */
+.css-1d391kg, [data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%) !important;
+}
+[data-testid="stSidebar"] .stMarkdown, 
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p { color: #e0e0e0 !important; }
+
+/* Metric cards */
+[data-testid="metric-container"] {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+    border-left: 4px solid #c0392b;
+}
+[data-testid="metric-container"] [data-testid="stMetricLabel"] { 
+    font-size: 0.8rem; color: #666; font-weight: 600; 
+}
+[data-testid="metric-container"] [data-testid="stMetricValue"] { 
+    font-size: 1.5rem; font-weight: 800; color: #1a1a2e; 
+}
+
+/* Page header */
+.page-header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #c0392b 100%);
+    color: white;
+    padding: 24px 28px;
+    border-radius: 16px;
+    margin-bottom: 24px;
+}
+.mill-logo { font-size: 2.5rem; }
+.mill-title { font-size: 1.8rem; font-weight: 800; margin: 0; }
+.mill-sub { font-size: 0.9rem; opacity: 0.8; margin-top: 2px; }
+
+/* Alert cards */
+.alert-card {
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.alert-red { background:#ffeaea; border-left:4px solid #e74c3c; }
+.alert-orange { background:#fff4e5; border-left:4px solid #e67e22; }
+.alert-green { background:#eafff0; border-left:4px solid #27ae60; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="page-header">
+  <div style="display:flex; align-items:center; gap:16px">
+    <span class="mill-logo">🏭</span>
+    <div>
+      <p class="mill-title">Bharathi Oil Mill</p>
+      <p class="mill-sub">Traditional Cold-Press & Milling Services · Management System</p>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── DB Init ───────────────────────────────────────────────────────────────────
+try:
+    from database import init_db, get_db
+    init_db()
+except Exception as e:
+    st.error(f"⚠️ Database connection error: {e}")
+    st.markdown("""
+    **Setup required:** Create a `.streamlit/secrets.toml` file:
+    ```toml
+    DATABASE_URL = "postgresql://user:password@host:5432/bharathi_oil_mill"
+    ```
+    Or set individual fields:
+    ```toml
+    DB_HOST = "localhost"
+    DB_PORT = 5432
+    DB_NAME = "bharathi_oil_mill"
+    DB_USER = "postgres"
+    DB_PASSWORD = "your_password"
+    ```
+    """)
+    st.stop()
+
+# ── Today's KPIs ──────────────────────────────────────────────────────────────
+today = date.today()
+month_start = today.replace(day=1)
+
+try:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Today revenue
+        cur.execute("""
+            SELECT COALESCE(SUM(total),0) as today_rev,
+                   COUNT(*) as today_bills
+            FROM bills WHERE DATE(created_at)=%s AND payment_status='paid'
+        """, (today,))
+        today_data = cur.fetchone()
+
+        # Pending bills
+        cur.execute("""
+            SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as amt
+            FROM bills WHERE payment_status='pending'
+        """)
+        pending_data = cur.fetchone()
+
+        # Overdue
+        cur.execute("""
+            SELECT COUNT(*) as overdue FROM bills
+            WHERE payment_status='pending' AND reminder_date <= %s
+        """, (today,))
+        overdue_data = cur.fetchone()
+
+        # Month revenue
+        cur.execute("""
+            SELECT COALESCE(SUM(total),0) as month_rev
+            FROM bills WHERE DATE(created_at) >= %s AND payment_status='paid'
+        """, (month_start,))
+        month_data = cur.fetchone()
+
+        # Active machines
+        cur.execute("""
+            SELECT status, COUNT(*) as cnt FROM machines GROUP BY status
+        """)
+        machine_status = {r["status"]: r["cnt"] for r in cur.fetchall()}
+
+        # Low stock
+        cur.execute("""
+            SELECT COUNT(*) as low FROM inventory
+            WHERE quantity <= reorder_level AND reorder_level > 0
+        """)
+        low_stock = cur.fetchone()
+
+        # Upcoming service
+        cur.execute("""
+            SELECT machine_name, next_service_date,
+                   (next_service_date - CURRENT_DATE) as days_left
+            FROM machines WHERE next_service_date IS NOT NULL
+            AND next_service_date <= CURRENT_DATE + INTERVAL '14 days'
+            ORDER BY next_service_date ASC LIMIT 5
+        """)
+        upcoming_service = cur.fetchall()
+
+        # Recent bills
+        cur.execute("""
+            SELECT bill_number, customer_name, total, payment_status,
+                   payment_method, DATE(created_at) as bill_date
+            FROM bills ORDER BY created_at DESC LIMIT 8
+        """)
+        recent_bills = cur.fetchall()
+
+except Exception as e:
+    st.error(f"Error fetching dashboard data: {e}")
+    st.stop()
+
+# ── KPI Metrics ───────────────────────────────────────────────────────────────
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("💰 Today's Revenue", f"₹{float(today_data['today_rev']):,.2f}",
+            f"{today_data['today_bills']} bills")
+col2.metric("📅 This Month", f"₹{float(month_data['month_rev']):,.2f}")
+col3.metric("⏳ Pending Bills", int(pending_data["cnt"]),
+            f"₹{float(pending_data['amt']):,.2f} due")
+col4.metric("🔴 Overdue", int(overdue_data["overdue"]),
+            delta_color="inverse")
+col5.metric("✅ Active Machines",
+            machine_status.get("active", 0),
+            f"🔧 {machine_status.get('maintenance', 0)} in maint.")
+
+st.markdown("---")
+
+col_left, col_right = st.columns([2, 1], gap="large")
+
+with col_left:
+    # ── Recent Bills ─────────────────────────────────────────────────────────
+    st.markdown("### 🧾 Recent Bills")
+    if recent_bills:
+        for bill in recent_bills:
+            status_icon = "✅" if bill["payment_status"] == "paid" else "⏳"
+            status_color = "#27ae60" if bill["payment_status"] == "paid" else "#e67e22"
+            st.markdown(f"""
+            <div style="display:flex; justify-content:space-between; align-items:center;
+                        padding:10px 14px; background:#f8f9fa; border-radius:8px; margin-bottom:6px;">
+              <div>
+                <strong>{bill['bill_number']}</strong>
+                <span style="margin-left:10px;color:#666;font-size:.85rem">
+                  👤 {bill['customer_name'] or 'Walk-in'}
+                </span>
+              </div>
+              <div style="text-align:right">
+                <strong>₹{float(bill['total']):.2f}</strong>
+                <span style="margin-left:8px;color:{status_color};font-size:.8rem">
+                  {status_icon} {bill['payment_status'].upper()}
+                </span>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("No bills yet today.")
+
+with col_right:
+    # ── Alerts ───────────────────────────────────────────────────────────────
+    st.markdown("### 🔔 Alerts")
+    
+    alerts_shown = 0
+    
+    if int(overdue_data["overdue"]) > 0:
+        st.markdown(f"""
+        <div class="alert-card alert-red">
+          🔴 <div><strong>{overdue_data['overdue']} overdue bill(s)</strong><br>
+          <small>Collect payments immediately</small></div>
+        </div>""", unsafe_allow_html=True)
+        alerts_shown += 1
+
+    if int(pending_data["cnt"]) > 0:
+        st.markdown(f"""
+        <div class="alert-card alert-orange">
+          ⏳ <div><strong>{pending_data['cnt']} pending bill(s)</strong><br>
+          <small>₹{float(pending_data['amt']):,.2f} to collect</small></div>
+        </div>""", unsafe_allow_html=True)
+        alerts_shown += 1
+
+    if int(low_stock["low"]) > 0:
+        st.markdown(f"""
+        <div class="alert-card alert-orange">
+          📦 <div><strong>{low_stock['low']} item(s) low in stock</strong><br>
+          <small>Check inventory</small></div>
+        </div>""", unsafe_allow_html=True)
+        alerts_shown += 1
+
+    for svc in upcoming_service:
+        days = int(svc["days_left"].days) if hasattr(svc["days_left"], "days") else int(svc["days_left"])
+        cls = "alert-red" if days <= 0 else "alert-orange"
+        label = "OVERDUE" if days <= 0 else f"in {days}d"
+        st.markdown(f"""
+        <div class="alert-card {cls}">
+          ⚙️ <div><strong>{svc['machine_name']}</strong><br>
+          <small>Service {label} · {svc['next_service_date']}</small></div>
+        </div>""", unsafe_allow_html=True)
+        alerts_shown += 1
+
+    if alerts_shown == 0:
+        st.markdown("""
+        <div class="alert-card alert-green">
+          ✅ <div><strong>All good!</strong><br>
+          <small>No urgent alerts</small></div>
+        </div>""", unsafe_allow_html=True)
+
+    # ── Quick Nav ─────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🚀 Quick Actions")
+    st.page_link("pages/01_POS.py", label="🧾 New Bill / POS", use_container_width=True)
+    st.page_link("pages/02_Inventory.py", label="📦 Inventory", use_container_width=True)
+    st.page_link("pages/03_Labour.py", label="👷 Labour", use_container_width=True)
+    st.page_link("pages/04_Machines.py", label="⚙️ Machines", use_container_width=True)
+    st.page_link("pages/05_Services.py", label="🛠 Services & Rates", use_container_width=True)
+    st.page_link("pages/06_Reports.py", label="📊 Reports", use_container_width=True)
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown(
+    f"<div style='text-align:center;color:#aaa;font-size:.8rem'>"
+    f"Bharathi Oil Mill Management System · {today.strftime('%d %B %Y')} · "
+    f"Built with Streamlit + PostgreSQL</div>",
+    unsafe_allow_html=True
+)
+
+
+
+========================================================================================================================
+FILE: 01_POS.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\pages\01_POS.py
+RELATIVE_PATH: pages\01_POS.py
+EXTENSION: .py
+========================================================================================================================
+
+"""
+Point of Sale — Bharathi Oil Mill
+Handles: service billing, oil seed processing with oil-cake buy-back,
+         customer info, payment, QR, pending bills.
+"""
+
+import streamlit as st
+import psycopg2.extras
+from datetime import date, timedelta
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from database import get_db, generate_bill_number
+from utils.bill_printer import generate_bill_html
+from utils.qr_utils import generate_bill_qr
+
+st.set_page_config(page_title="POS – Bharathi Oil Mill", layout="wide")
+
+# ── Styles ───────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+.pos-card {background:#fff; border-radius:12px; padding:16px; box-shadow:0 2px 8px rgba(0,0,0,.08);}
+.item-row {display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #f0f0f0;}
+.total-box {background:linear-gradient(135deg,#c0392b,#e74c3c); color:#fff; border-radius:10px; padding:16px; text-align:center;}
+.total-amount {font-size:2.2rem; font-weight:800;}
+.badge-paid {background:#27ae60; color:#fff; padding:2px 10px; border-radius:12px; font-size:12px;}
+.badge-pending {background:#e67e22; color:#fff; padding:2px 10px; border-radius:12px; font-size:12px;}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("## 🏪 Point of Sale")
+st.markdown("---")
+
+# ── Load services ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def load_services():
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM services WHERE is_active=TRUE ORDER BY category, name")
+        return cur.fetchall()
+
+services = load_services()
+svc_by_cat = {}
+for s in services:
+    svc_by_cat.setdefault(s["category"], []).append(s)
+
+CAT_LABELS = {
+    "grain_milling": "🌾 Grain Milling",
+    "spice_grinding": "🌶 Spice Grinding",
+    "dhal_splitting": "🫘 Dhal Splitting",
+    "oil_extraction": "🫒 Oil Extraction",
+    "oil_cake_grinding": "🟤 Oil Cake Grinding",
+    "wet_grinding": "💧 Wet Grinding",
+}
+
+# ── Session state ─────────────────────────────────────────────────────────────
+if "cart" not in st.session_state:
+    st.session_state.cart = []          # [{service_id, name, qty, rate, amount}]
+if "oil_proc" not in st.session_state:
+    st.session_state.oil_proc = []      # oil-seed processing rows
+
+tab_new, tab_pending, tab_scan = st.tabs(["🧾 New Bill", "⏳ Pending Bills", "📷 Scan QR"])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 1: NEW BILL
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_new:
+    col_left, col_right = st.columns([3, 2], gap="large")
+
+    with col_left:
+        # ── Service selector ──────────────────────────────────────────────────
+        st.markdown("### ➕ Add Services")
+        sel_cat = st.selectbox("Category", list(svc_by_cat.keys()),
+                               format_func=lambda x: CAT_LABELS.get(x, x))
+        cat_services = svc_by_cat.get(sel_cat, [])
+        sel_svc = st.selectbox("Service", cat_services,
+                               format_func=lambda s: f"{s['name']}  (₹{s['rate_per_kg']}/kg)")
+
+        col_q, col_r, col_add = st.columns([2, 2, 1])
+        with col_q:
+            qty = st.number_input("Qty (kg)", min_value=0.001, value=1.0, step=0.5, format="%.3f", key="qty_input")
+        with col_r:
+            rate = st.number_input("Rate ₹/kg", min_value=0.0,
+                                   value=float(sel_svc["rate_per_kg"]), step=0.5, key="rate_input")
+        with col_add:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➕ Add", use_container_width=True, type="primary"):
+                st.session_state.cart.append({
+                    "service_id": sel_svc["id"],
+                    "service_name": sel_svc["name"],
+                    "quantity_kg": qty,
+                    "rate_per_kg": rate,
+                    "amount": round(qty * rate, 2),
+                    "notes": "",
+                })
+                st.rerun()
+
+        # ── Oil Seed Processing ───────────────────────────────────────────────
+        with st.expander("🫒 Oil Seed Processing (with Oil Cake Buy-back)", expanded=False):
+            oil_seeds = [s for s in services if s["category"] == "oil_extraction"]
+            oil_svc_sel = st.selectbox("Oil Seed Type", oil_seeds,
+                                       format_func=lambda s: s["name"], key="oil_svc_sel")
+
+            # Load oil cake inventory rate
+            def get_oilcake_rate(seed_name):
+                seed_map = {
+                    "Groundnut": "Groundnut Oil Cake",
+                    "Sesame": "Sesame Oil Cake",
+                    "Coconut": "Coconut Oil Cake",
+                    "Ilupai": "Ilupai Oil Cake",
+                    "Neem": "Neem Oil Cake",
+                }
+                for k, v in seed_map.items():
+                    if k.lower() in seed_name.lower():
+                        with get_db() as conn:
+                            cur = conn.cursor()
+                            cur.execute("SELECT rate_per_unit FROM inventory WHERE item_name=%s", (v,))
+                            row = cur.fetchone()
+                            return float(row[0]) if row else 10.0
+                return 10.0
+
+            o_col1, o_col2 = st.columns(2)
+            with o_col1:
+                o_input_kg = st.number_input("Input Seed (kg)", min_value=0.1, value=5.0, step=0.5, key="o_inp")
+                o_proc_rate = st.number_input("Processing Rate ₹/kg", min_value=0.0,
+                                              value=float(oil_svc_sel["rate_per_kg"]), key="o_prate")
+            with o_col2:
+                o_cake_kg = st.number_input("Oil Cake Returned (kg)", min_value=0.0, value=round(o_input_kg * 0.4, 3),
+                                            step=0.1, key="o_cake")
+                o_cake_rate = st.number_input("Oil Cake Rate ₹/kg (buy-back)",
+                                              min_value=0.0,
+                                              value=get_oilcake_rate(oil_svc_sel["name"]),
+                                              key="o_crate")
+
+            proc_fee = round(o_input_kg * o_proc_rate, 2)
+            cake_val = round(o_cake_kg * o_cake_rate, 2)
+            net = round(proc_fee - cake_val, 2)
+            direction = "Customer pays" if net > 0 else "Mill pays customer"
+            st.info(f"**Processing fee:** ₹{proc_fee:.2f}  |  **Oil cake value:** ₹{cake_val:.2f}  |  **Net (_{direction}_):** ₹{abs(net):.2f}")
+
+            if st.button("➕ Add Oil Processing", key="add_oil_proc"):
+                st.session_state.oil_proc.append({
+                    "seed_type": oil_svc_sel["name"],
+                    "input_kg": o_input_kg,
+                    "processing_rate": o_proc_rate,
+                    "processing_fee": proc_fee,
+                    "oil_cake_kg": o_cake_kg,
+                    "oil_cake_rate": o_cake_rate,
+                    "oil_cake_value": cake_val,
+                    "net_amount": net,
+                    "direction": "collect" if net > 0 else "pay",
+                })
+                st.rerun()
+
+        # ── Cart ──────────────────────────────────────────────────────────────
+        st.markdown("### 🛒 Cart")
+        if not st.session_state.cart and not st.session_state.oil_proc:
+            st.info("No items added yet.")
+        else:
+            for i, item in enumerate(st.session_state.cart):
+                c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 0.8])
+                c1.write(f"**{item['service_name']}**")
+                c2.write(f"{item['quantity_kg']:.3f} kg")
+                c3.write(f"₹{item['amount']:.2f}")
+                if c4.button("🗑", key=f"del_{i}"):
+                    st.session_state.cart.pop(i)
+                    st.rerun()
+
+            for i, op in enumerate(st.session_state.oil_proc):
+                c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 0.8])
+                c1.write(f"🫒 **{op['seed_type']}** _(oil proc)_")
+                c2.write(f"{op['input_kg']:.3f} kg")
+                net_disp = f"₹{abs(op['net_amount']):.2f} {'←' if op['net_amount']>0 else '→'}"
+                c3.write(net_disp)
+                if c4.button("🗑", key=f"del_op_{i}"):
+                    st.session_state.oil_proc.pop(i)
+                    st.rerun()
+
+    # ── Right panel: summary + customer + payment ──────────────────────────────
+    with col_right:
+        subtotal = sum(i["amount"] for i in st.session_state.cart)
+        oil_net = sum(op["net_amount"] for op in st.session_state.oil_proc)
+        grand_total = round(subtotal + oil_net, 2)
+
+        st.markdown(f"""
+        <div class="total-box">
+            <div style="font-size:.85rem;opacity:.85">TOTAL AMOUNT</div>
+            <div class="total-amount">₹{grand_total:.2f}</div>
+            <div style="font-size:.8rem;opacity:.7">Services: ₹{subtotal:.2f} | Oil proc net: ₹{oil_net:.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("### 👤 Customer Info _(optional)_")
+        cust_name = st.text_input("Customer Name", placeholder="Leave blank for walk-in")
+        cust_phone = st.text_input("Phone Number", placeholder="+91 XXXXX XXXXX")
+        notes = st.text_area("Notes", placeholder="Any special instructions...", height=60)
+
+        st.markdown("### 💳 Payment")
+        payment_method = st.radio("Method", ["Cash", "UPI", "Skip / Pending"],
+                                  horizontal=True)
+        
+        reminder_date = None
+        if payment_method == "Skip / Pending":
+            st.warning("⏳ This bill will be marked as **Pending**.")
+            if not cust_name and not cust_phone:
+                st.error("Please add customer name or phone for pending bills!")
+            reminder_date = st.date_input("Reminder Date", value=date.today() + timedelta(days=7))
+
+        discount = st.number_input("Discount (₹)", min_value=0.0, value=0.0, step=1.0)
+        final_total = max(0, grand_total - discount)
+        if discount > 0:
+            st.markdown(f"**Final Total after discount: ₹{final_total:.2f}**")
+
+        col_save, col_clear = st.columns(2)
+        with col_save:
+            save_btn = st.button("💾 Save Bill", type="primary", use_container_width=True,
+                                 disabled=(not st.session_state.cart and not st.session_state.oil_proc))
+        with col_clear:
+            if st.button("🧹 Clear Cart", use_container_width=True):
+                st.session_state.cart = []
+                st.session_state.oil_proc = []
+                st.rerun()
+
+        if save_btn:
+            if payment_method == "Skip / Pending" and not cust_name and not cust_phone:
+                st.error("Add customer name/phone for pending bills.")
+            else:
+                bill_no = generate_bill_number()
+                pay_method = payment_method.lower() if payment_method != "Skip / Pending" else "pending"
+                pay_status = "pending" if payment_method == "Skip / Pending" else "paid"
+
+                with get_db() as conn:
+                    cur = conn.cursor()
+
+                    # Optionally upsert customer
+                    cust_id = None
+                    if cust_name or cust_phone:
+                        cur.execute(
+                            "INSERT INTO customers (name, phone) VALUES (%s,%s) RETURNING id",
+                            (cust_name or None, cust_phone or None)
+                        )
+                        cust_id = cur.fetchone()[0]
+
+                    # Insert bill
+                    cur.execute("""
+                        INSERT INTO bills (bill_number, customer_id, customer_name, customer_phone,
+                            subtotal, discount, total, payment_method, payment_status,
+                            reminder_date, notes)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                    """, (bill_no, cust_id, cust_name or None, cust_phone or None,
+                          grand_total, discount, final_total,
+                          pay_method, pay_status, reminder_date, notes or None))
+                    bill_id = cur.fetchone()[0]
+
+                    # Insert bill items
+                    for item in st.session_state.cart:
+                        cur.execute("""
+                            INSERT INTO bill_items (bill_id, service_id, service_name,
+                                quantity_kg, rate_per_kg, amount)
+                            VALUES (%s,%s,%s,%s,%s,%s)
+                        """, (bill_id, item["service_id"], item["service_name"],
+                              item["quantity_kg"], item["rate_per_kg"], item["amount"]))
+
+                    # Insert oil processing rows + update inventory
+                    for op in st.session_state.oil_proc:
+                        cur.execute("""
+                            INSERT INTO oil_processing (bill_id, seed_type, input_kg,
+                                processing_rate, processing_fee, oil_cake_kg, oil_cake_rate,
+                                oil_cake_value, net_amount, direction)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, (bill_id, op["seed_type"], op["input_kg"],
+                              op["processing_rate"], op["processing_fee"],
+                              op["oil_cake_kg"], op["oil_cake_rate"],
+                              op["oil_cake_value"], op["net_amount"], op["direction"]))
+
+                        # Update oil cake inventory
+                        seed_cake_map = {
+                            "groundnut": "Groundnut Oil Cake",
+                            "sesame": "Sesame Oil Cake",
+                            "coconut": "Coconut Oil Cake",
+                            "ilupai": "Ilupai Oil Cake",
+                            "neem": "Neem Oil Cake",
+                        }
+                        for k, v in seed_cake_map.items():
+                            if k in op["seed_type"].lower():
+                                cur.execute("""
+                                    UPDATE inventory SET quantity = quantity + %s, updated_at=NOW()
+                                    WHERE item_name = %s
+                                """, (op["oil_cake_kg"], v))
+                                cur.execute("""
+                                    INSERT INTO inventory_transactions
+                                        (inventory_id, transaction_type, quantity, rate, total_value, reference_bill)
+                                    SELECT id, 'in', %s, %s, %s, %s FROM inventory WHERE item_name=%s
+                                """, (op["oil_cake_kg"], op["oil_cake_rate"],
+                                      op["oil_cake_value"], bill_no, v))
+                                break
+
+                # Fetch the saved bill for printing
+                with get_db() as conn:
+                    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                    cur.execute("SELECT * FROM bills WHERE bill_number=%s", (bill_no,))
+                    saved_bill = dict(cur.fetchone())
+                    cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (bill_id,))
+                    saved_items = [dict(r) for r in cur.fetchall()]
+                    cur.execute("SELECT * FROM oil_processing WHERE bill_id=%s", (bill_id,))
+                    saved_ops = [dict(r) for r in cur.fetchall()]
+
+                st.success(f"✅ Bill **{bill_no}** saved!")
+                st.session_state.cart = []
+                st.session_state.oil_proc = []
+
+                # Show QR + print button
+                qr_b64 = generate_bill_qr({**saved_bill, "items": saved_items})
+                col_qr, col_btn = st.columns([1, 2])
+                with col_qr:
+                    st.image(f"data:image/png;base64,{qr_b64}", width=130, caption="Scan to verify")
+                with col_btn:
+                    bill_html = generate_bill_html(saved_bill, saved_items, saved_ops)
+                    st.download_button("🖨 Download / Print Bill",
+                                       data=bill_html,
+                                       file_name=f"{bill_no}.html",
+                                       mime="text/html",
+                                       use_container_width=True)
+                st.cache_data.clear()
+                st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 2: PENDING BILLS
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_pending:
+    st.markdown("### ⏳ Pending / Unpaid Bills")
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT b.*, 
+                   CASE WHEN b.reminder_date <= CURRENT_DATE THEN true ELSE false END as overdue
+            FROM bills b
+            WHERE b.payment_status='pending'
+            ORDER BY b.reminder_date ASC NULLS LAST, b.created_at DESC
+        """)
+        pending_bills = cur.fetchall()
+
+    if not pending_bills:
+        st.success("🎉 No pending bills!")
+    else:
+        for bill in pending_bills:
+            overdue = bill["overdue"]
+            color = "#ffeaea" if overdue else "#fffbea"
+            icon = "🔴" if overdue else "🟡"
+            with st.container():
+                st.markdown(f"""
+                <div style="background:{color};border-radius:8px;padding:12px;margin-bottom:8px;border-left:4px solid {'#e74c3c' if overdue else '#f39c12'}">
+                {icon} <strong>{bill['bill_number']}</strong> &nbsp;|&nbsp;
+                👤 {bill['customer_name'] or 'Walk-in'} &nbsp;|&nbsp;
+                📞 {bill['customer_phone'] or '—'} &nbsp;|&nbsp;
+                💰 ₹{bill['total']:.2f} &nbsp;|&nbsp;
+                📅 Due: {bill['reminder_date'] or 'Not set'}
+                {'&nbsp; <span style="color:#e74c3c;font-weight:700">OVERDUE!</span>' if overdue else ''}
+                </div>
+                """, unsafe_allow_html=True)
+
+                col_m1, col_m2, col_m3 = st.columns([2, 2, 1])
+                with col_m1:
+                    new_method = st.selectbox("Mark as paid via",
+                                              ["cash", "upi"],
+                                              key=f"pm_{bill['id']}")
+                with col_m2:
+                    st.write("")
+                with col_m3:
+                    if st.button("✅ Mark Paid", key=f"pay_{bill['id']}"):
+                        with get_db() as conn:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE bills SET payment_status='paid',
+                                payment_method=%s WHERE id=%s
+                            """, (new_method, bill["id"]))
+                        st.success(f"Bill {bill['bill_number']} marked as paid!")
+                        st.cache_data.clear()
+                        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3: SCAN QR (decode)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_scan:
+    st.markdown("### 📷 Scan / Decode QR Code")
+    st.info("Paste the bill number to retrieve details, or upload a QR code image.")
+
+    search_bill = st.text_input("Enter Bill Number", placeholder="BOM-20240101-0001")
+    if search_bill:
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM bills WHERE bill_number=%s", (search_bill,))
+            b = cur.fetchone()
+            if b:
+                cur.execute("SELECT * FROM bill_items WHERE bill_id=%s", (b["id"],))
+                b_items = cur.fetchall()
+                cur.execute("SELECT * FROM oil_processing WHERE bill_id=%s", (b["id"],))
+                b_ops = cur.fetchall()
+
+                st.success(f"✅ Bill found: **{b['bill_number']}**")
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    st.write(f"**Customer:** {b['customer_name'] or 'Walk-in'}")
+                    st.write(f"**Phone:** {b['customer_phone'] or '—'}")
+                    st.write(f"**Total:** ₹{b['total']:.2f}")
+                    st.write(f"**Status:** {b['payment_status']}")
+                    st.write(f"**Payment:** {b['payment_method']}")
+                    if b_items:
+                        st.markdown("**Items:**")
+                        for item in b_items:
+                            st.write(f"• {item['service_name']} – {item['quantity_kg']} kg – ₹{item['amount']}")
+                with col_b:
+                    qr_b64 = generate_bill_qr({**dict(b), "items": [dict(i) for i in b_items]})
+                    st.image(f"data:image/png;base64,{qr_b64}", width=150)
+
+                bill_html = generate_bill_html(dict(b), [dict(i) for i in b_items],
+                                               [dict(o) for o in b_ops])
+                st.download_button("🖨 Download Bill", data=bill_html,
+                                   file_name=f"{b['bill_number']}.html",
+                                   mime="text/html")
+            else:
+                st.error("Bill not found.")
+
+
+
+========================================================================================================================
+FILE: 02_Inventory.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\pages\02_Inventory.py
+RELATIVE_PATH: pages\02_Inventory.py
+EXTENSION: .py
+========================================================================================================================
+
+"""Inventory Management — Bharathi Oil Mill"""
+
+import streamlit as st
+import psycopg2.extras
+from datetime import datetime
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from database import get_db
+import pandas as pd
+
+st.set_page_config(page_title="Inventory – Bharathi Oil Mill", layout="wide")
+st.markdown("## 📦 Inventory Management")
+st.markdown("---")
+
+CAT_ICONS = {
+    "oil_cake": "🟤", "oil_product": "🫙", "supplies": "📦",
+    "grain": "🌾", "spice": "🌶", "other": "📋",
+}
+
+tab_view, tab_add, tab_txn, tab_bulk_sale = st.tabs(
+    ["📊 Stock View", "➕ Add / Edit Item", "📋 Transactions", "💰 Bulk Oil Cake Sale"])
+
+
+# ─── TAB 1: STOCK VIEW ────────────────────────────────────────────────────────
+with tab_view:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM inventory ORDER BY category, item_name")
+        items = cur.fetchall()
+
+    if not items:
+        st.info("No inventory items found.")
+    else:
+        df = pd.DataFrame(items)
+        df["value"] = df["quantity"] * df["rate_per_unit"]
+        df["status"] = df.apply(
+            lambda r: "🔴 Low" if r["quantity"] <= r["reorder_level"] and r["reorder_level"] > 0
+                      else "✅ OK", axis=1)
+        df["icon"] = df["category"].map(CAT_ICONS).fillna("📋")
+        df["display"] = df["icon"] + " " + df["item_name"]
+
+        # Summary cards
+        total_val = df["value"].sum()
+        low_stock = (df["quantity"] <= df["reorder_level"]).sum()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Inventory Value", f"₹{total_val:,.2f}")
+        c2.metric("Total Items", len(df))
+        c3.metric("Low Stock Alerts", int(low_stock), delta_color="inverse")
+
+        st.markdown("---")
+        
+        for cat, group in df.groupby("category"):
+            icon = CAT_ICONS.get(cat, "📋")
+            st.markdown(f"#### {icon} {cat.replace('_', ' ').title()}")
+            display_df = group[["item_name", "quantity", "unit", "rate_per_unit", "value", "status", "reorder_level"]].copy()
+            display_df.columns = ["Item", "Qty", "Unit", "Rate/Unit (₹)", "Value (₹)", "Status", "Reorder Level"]
+            display_df["Qty"] = display_df["Qty"].apply(lambda x: f"{x:.3f}")
+            display_df["Rate/Unit (₹)"] = display_df["Rate/Unit (₹)"].apply(lambda x: f"₹{x:.2f}")
+            display_df["Value (₹)"] = display_df["Value (₹)"].apply(lambda x: f"₹{x:.2f}")
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
+# ─── TAB 2: ADD / EDIT ITEM ───────────────────────────────────────────────────
+with tab_add:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM inventory ORDER BY item_name")
+        inv_items = cur.fetchall()
+
+    action = st.radio("Action", ["Add New Item", "Edit Existing", "Adjust Stock"], horizontal=True)
+
+    if action == "Add New Item":
+        with st.form("add_inv"):
+            st.markdown("#### ➕ Add New Inventory Item")
+            col1, col2 = st.columns(2)
+            with col1:
+                name = st.text_input("Item Name *")
+                cat = st.selectbox("Category", list(CAT_ICONS.keys()),
+                                   format_func=lambda x: x.replace("_", " ").title())
+                qty = st.number_input("Opening Qty", min_value=0.0, value=0.0)
+            with col2:
+                unit = st.selectbox("Unit", ["kg", "litre", "pcs", "bag", "ton"])
+                rate = st.number_input("Rate per Unit (₹)", min_value=0.0, value=0.0)
+                reorder = st.number_input("Reorder Level", min_value=0.0, value=0.0)
+            notes = st.text_area("Notes", height=60)
+            if st.form_submit_button("💾 Add Item", type="primary"):
+                if name:
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO inventory (item_name, category, quantity, unit, rate_per_unit, reorder_level, notes)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s)
+                        """, (name, cat, qty, unit, rate, reorder, notes))
+                    st.success(f"✅ '{name}' added!")
+                    st.rerun()
+                else:
+                    st.error("Item name is required.")
+
+    elif action == "Edit Existing":
+        sel_item = st.selectbox("Select Item", inv_items,
+                                format_func=lambda x: x["item_name"])
+        if sel_item:
+            with st.form("edit_inv"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    e_rate = st.number_input("New Rate/Unit (₹)", value=float(sel_item["rate_per_unit"]))
+                    e_reorder = st.number_input("Reorder Level", value=float(sel_item["reorder_level"]))
+                with col2:
+                    e_notes = st.text_area("Notes", value=sel_item["notes"] or "", height=80)
+                if st.form_submit_button("💾 Update", type="primary"):
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            UPDATE inventory SET rate_per_unit=%s, reorder_level=%s,
+                            notes=%s, updated_at=NOW() WHERE id=%s
+                        """, (e_rate, e_reorder, e_notes, sel_item["id"]))
+                    st.success("✅ Updated!")
+                    st.rerun()
+
+    elif action == "Adjust Stock":
+        sel_item = st.selectbox("Select Item", inv_items,
+                                format_func=lambda x: f"{x['item_name']} (Current: {x['quantity']} {x['unit']})")
+        if sel_item:
+            with st.form("adj_stock"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    adj_type = st.radio("Type", ["Stock In", "Stock Out", "Correction"])
+                    adj_qty = st.number_input("Quantity", min_value=0.001, value=1.0)
+                with col2:
+                    adj_rate = st.number_input("Rate (₹)", min_value=0.0, value=float(sel_item["rate_per_unit"]))
+                    adj_ref = st.text_input("Reference / Notes")
+                if st.form_submit_button("💾 Adjust", type="primary"):
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        if adj_type == "Stock In":
+                            cur.execute("UPDATE inventory SET quantity=quantity+%s, updated_at=NOW() WHERE id=%s",
+                                        (adj_qty, sel_item["id"]))
+                            txn_type = "in"
+                        elif adj_type == "Stock Out":
+                            cur.execute("UPDATE inventory SET quantity=GREATEST(0,quantity-%s), updated_at=NOW() WHERE id=%s",
+                                        (adj_qty, sel_item["id"]))
+                            txn_type = "out"
+                        else:
+                            cur.execute("UPDATE inventory SET quantity=%s, updated_at=NOW() WHERE id=%s",
+                                        (adj_qty, sel_item["id"]))
+                            txn_type = "correction"
+                        cur.execute("""
+                            INSERT INTO inventory_transactions
+                                (inventory_id, transaction_type, quantity, rate, total_value, notes)
+                            VALUES (%s,%s,%s,%s,%s,%s)
+                        """, (sel_item["id"], txn_type, adj_qty, adj_rate,
+                              adj_qty * adj_rate, adj_ref))
+                    st.success("✅ Stock adjusted!")
+                    st.rerun()
+
+
+# ─── TAB 3: TRANSACTIONS ──────────────────────────────────────────────────────
+with tab_txn:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT it.*, i.item_name, i.unit
+            FROM inventory_transactions it
+            JOIN inventory i ON i.id = it.inventory_id
+            ORDER BY it.created_at DESC LIMIT 100
+        """)
+        txns = cur.fetchall()
+
+    if txns:
+        df_txn = pd.DataFrame(txns)
+        df_txn["created_at"] = pd.to_datetime(df_txn["created_at"]).dt.strftime("%d-%m-%Y %H:%M")
+        st.dataframe(
+            df_txn[["created_at", "item_name", "transaction_type", "quantity", "unit", "rate", "total_value", "reference_bill", "notes"]],
+            use_container_width=True, hide_index=True
+        )
+    else:
+        st.info("No transactions yet.")
+
+
+# ─── TAB 4: BULK OIL CAKE SALE ────────────────────────────────────────────────
+with tab_bulk_sale:
+    st.markdown("### 💰 Sell Oil Cake in Bulk")
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM inventory WHERE category='oil_cake' AND quantity>0 ORDER BY item_name")
+        cake_items = cur.fetchall()
+
+    if not cake_items:
+        st.info("No oil cake stock available.")
+    else:
+        with st.form("bulk_cake_sale"):
+            sel_cake = st.selectbox("Oil Cake Type", cake_items,
+                                    format_func=lambda x: f"{x['item_name']} (Stock: {x['quantity']:.2f} kg @ ₹{x['rate_per_unit']}/kg)")
+            col1, col2 = st.columns(2)
+            with col1:
+                sale_qty = st.number_input("Sale Qty (kg)", min_value=0.1,
+                                           max_value=float(sel_cake["quantity"]),
+                                           value=min(10.0, float(sel_cake["quantity"])))
+                sale_rate = st.number_input("Sale Rate ₹/kg", min_value=0.0,
+                                            value=float(sel_cake["rate_per_unit"]))
+            with col2:
+                buyer_name = st.text_input("Buyer Name")
+                buyer_phone = st.text_input("Buyer Phone")
+            pay_m = st.radio("Payment", ["Cash", "UPI"], horizontal=True)
+
+            sale_amount = round(sale_qty * sale_rate, 2)
+            st.info(f"**Sale Amount: ₹{sale_amount:.2f}**")
+
+            if st.form_submit_button("💾 Record Sale", type="primary"):
+                from database import generate_bill_number
+                bill_no = generate_bill_number()
+                with get_db() as conn:
+                    cur = conn.cursor()
+                    # Deduct inventory
+                    cur.execute("UPDATE inventory SET quantity=quantity-%s, updated_at=NOW() WHERE id=%s",
+                                (sale_qty, sel_cake["id"]))
+                    cur.execute("""
+                        INSERT INTO inventory_transactions
+                            (inventory_id, transaction_type, quantity, rate, total_value, reference_bill, notes)
+                        VALUES (%s, 'out', %s, %s, %s, %s, %s)
+                    """, (sel_cake["id"], sale_qty, sale_rate, sale_amount,
+                          bill_no, f"Bulk sale to {buyer_name or 'unknown'}"))
+
+                    # Create a bill record
+                    cur.execute("""
+                        INSERT INTO bills (bill_number, customer_name, customer_phone,
+                            subtotal, total, payment_method, payment_status, bill_type)
+                        VALUES (%s,%s,%s,%s,%s,%s,'paid','oil_cake_sale') RETURNING id
+                    """, (bill_no, buyer_name or None, buyer_phone or None,
+                          sale_amount, sale_amount, pay_m.lower()))
+                    bill_id = cur.fetchone()[0]
+                    cur.execute("""
+                        INSERT INTO bill_items (bill_id, service_name, quantity_kg, rate_per_kg, amount)
+                        VALUES (%s,%s,%s,%s,%s)
+                    """, (bill_id, sel_cake["item_name"], sale_qty, sale_rate, sale_amount))
+
+                st.success(f"✅ Sale recorded! Bill: {bill_no} | Amount: ₹{sale_amount:.2f}")
+                st.rerun()
+
+
+
+========================================================================================================================
+FILE: 03_Labour.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\pages\03_Labour.py
+RELATIVE_PATH: pages\03_Labour.py
+EXTENSION: .py
+========================================================================================================================
+
+"""Labour Management — Bharathi Oil Mill"""
+
+import streamlit as st
+import psycopg2.extras
+from datetime import date, timedelta
+import pandas as pd
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from database import get_db
+
+st.set_page_config(page_title="Labour – Bharathi Oil Mill", layout="wide")
+st.markdown("## 👷 Labour Management")
+st.markdown("---")
+
+tab_attend, tab_roster, tab_report = st.tabs(
+    ["📅 Attendance & Wages", "👥 Worker Roster", "📊 Reports"])
+
+
+# ─── TAB 1: ATTENDANCE ───────────────────────────────────────────────────────
+with tab_attend:
+    st.markdown("### 📅 Mark Attendance")
+    
+    work_date = st.date_input("Work Date", value=date.today())
+    
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM labourers WHERE is_active=TRUE ORDER BY name")
+        labourers = cur.fetchall()
+
+    if not labourers:
+        st.warning("No labourers registered. Add workers in the Roster tab.")
+    else:
+        # Check for existing attendance on selected date
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT la.*, l.name, l.daily_wage
+                FROM labour_attendance la
+                JOIN labourers l ON l.id = la.labourer_id
+                WHERE la.work_date = %s
+            """, (work_date,))
+            existing_attend = {r["labourer_id"]: r for r in cur.fetchall()}
+
+        st.markdown(f"**Workers for {work_date.strftime('%d %B %Y')}:**")
+        
+        attendance_data = []
+        for lab in labourers:
+            exist = existing_attend.get(lab["id"], {})
+            with st.expander(f"👷 {lab['name']}  {'✅' if exist.get('present') else '—'}", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    present = st.checkbox("Present", value=bool(exist.get("present", True)),
+                                         key=f"p_{lab['id']}_{work_date}")
+                    days = st.number_input("Days worked", min_value=0.0, max_value=1.0,
+                                          value=float(exist.get("days_worked", 1.0)),
+                                          step=0.5, key=f"d_{lab['id']}_{work_date}")
+                with col2:
+                    default_wage = float(lab["daily_wage"]) * days
+                    wage = st.number_input("Wage Paid (₹)", min_value=0.0,
+                                          value=float(exist.get("wage_paid", default_wage)),
+                                          key=f"w_{lab['id']}_{work_date}")
+                    advance = st.number_input("Advance (₹)", min_value=0.0,
+                                             value=float(exist.get("advance", 0.0)),
+                                             key=f"a_{lab['id']}_{work_date}")
+                with col3:
+                    pay_m = st.radio("Payment", ["cash", "upi"],
+                                    index=0 if exist.get("payment_method", "cash") == "cash" else 1,
+                                    key=f"pm_{lab['id']}_{work_date}")
+                    notes = st.text_input("Notes", value=exist.get("notes", "") or "",
+                                         key=f"n_{lab['id']}_{work_date}")
+                attendance_data.append({
+                    "labourer_id": lab["id"],
+                    "present": present,
+                    "days_worked": days,
+                    "wage_paid": wage,
+                    "advance": advance,
+                    "payment_method": pay_m,
+                    "notes": notes,
+                    "existing_id": exist.get("id"),
+                })
+
+        if st.button("💾 Save Attendance", type="primary"):
+            with get_db() as conn:
+                cur = conn.cursor()
+                for rec in attendance_data:
+                    if rec["existing_id"]:
+                        cur.execute("""
+                            UPDATE labour_attendance SET present=%s, days_worked=%s,
+                            wage_paid=%s, advance=%s, payment_method=%s, notes=%s
+                            WHERE id=%s
+                        """, (rec["present"], rec["days_worked"], rec["wage_paid"],
+                              rec["advance"], rec["payment_method"], rec["notes"],
+                              rec["existing_id"]))
+                    else:
+                        cur.execute("""
+                            INSERT INTO labour_attendance
+                                (labourer_id, work_date, present, days_worked,
+                                 wage_paid, advance, payment_method, notes)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, (rec["labourer_id"], work_date, rec["present"],
+                              rec["days_worked"], rec["wage_paid"], rec["advance"],
+                              rec["payment_method"], rec["notes"]))
+            st.success("✅ Attendance saved!")
+            st.rerun()
+
+    # Daily summary
+    st.markdown("---")
+    st.markdown("### 📋 Today's Summary")
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT l.name, la.present, la.days_worked, la.wage_paid, la.advance,
+                   la.payment_method, la.notes
+            FROM labour_attendance la
+            JOIN labourers l ON l.id = la.labourer_id
+            WHERE la.work_date = %s
+            ORDER BY l.name
+        """, (work_date,))
+        today_summary = cur.fetchall()
+
+    if today_summary:
+        df_sum = pd.DataFrame(today_summary)
+        total_wage = df_sum["wage_paid"].sum()
+        total_advance = df_sum["advance"].sum()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Workers Present", int(df_sum["present"].sum()))
+        c2.metric("Total Wages Paid", f"₹{total_wage:.2f}")
+        c3.metric("Total Advance", f"₹{total_advance:.2f}")
+        st.dataframe(df_sum, use_container_width=True, hide_index=True)
+
+
+# ─── TAB 2: ROSTER ────────────────────────────────────────────────────────────
+with tab_roster:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM labourers ORDER BY is_active DESC, name")
+        all_labourers = cur.fetchall()
+
+    action = st.radio("Action", ["View Roster", "Add Labourer", "Edit Labourer"], horizontal=True)
+
+    if action == "View Roster":
+        if all_labourers:
+            df_lab = pd.DataFrame(all_labourers)
+            df_lab["status"] = df_lab["is_active"].map({True: "✅ Active", False: "❌ Inactive"})
+            st.dataframe(
+                df_lab[["name", "phone", "daily_wage", "status"]].rename(
+                    columns={"name": "Name", "phone": "Phone",
+                             "daily_wage": "Daily Wage (₹)", "status": "Status"}),
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("No labourers registered yet.")
+
+    elif action == "Add Labourer":
+        with st.form("add_lab"):
+            st.markdown("#### ➕ Add New Labourer")
+            col1, col2 = st.columns(2)
+            with col1:
+                l_name = st.text_input("Name *")
+                l_phone = st.text_input("Phone")
+            with col2:
+                l_wage = st.number_input("Daily Wage (₹)", min_value=0.0, value=400.0)
+            if st.form_submit_button("💾 Add Labourer", type="primary"):
+                if l_name:
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        cur.execute(
+                            "INSERT INTO labourers (name, phone, daily_wage) VALUES (%s,%s,%s)",
+                            (l_name, l_phone or None, l_wage)
+                        )
+                    st.success(f"✅ {l_name} added!")
+                    st.rerun()
+                else:
+                    st.error("Name required.")
+
+    elif action == "Edit Labourer":
+        sel_lab = st.selectbox("Select Labourer", all_labourers,
+                               format_func=lambda x: f"{x['name']} ({'Active' if x['is_active'] else 'Inactive'})")
+        if sel_lab:
+            with st.form("edit_lab"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    e_name = st.text_input("Name", value=sel_lab["name"])
+                    e_phone = st.text_input("Phone", value=sel_lab["phone"] or "")
+                with col2:
+                    e_wage = st.number_input("Daily Wage (₹)", value=float(sel_lab["daily_wage"]))
+                    e_active = st.checkbox("Active", value=bool(sel_lab["is_active"]))
+                if st.form_submit_button("💾 Update", type="primary"):
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            UPDATE labourers SET name=%s, phone=%s, daily_wage=%s, is_active=%s WHERE id=%s
+                        """, (e_name, e_phone or None, e_wage, e_active, sel_lab["id"]))
+                    st.success("✅ Updated!")
+                    st.rerun()
+
+
+# ─── TAB 3: REPORTS ───────────────────────────────────────────────────────────
+with tab_report:
+    st.markdown("### 📊 Labour Reports")
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        from_date = st.date_input("From", value=date.today().replace(day=1))
+    with col_f2:
+        to_date = st.date_input("To", value=date.today())
+
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT l.name, 
+                   COUNT(la.id) FILTER (WHERE la.present) as days_present,
+                   SUM(la.days_worked) as total_days,
+                   SUM(la.wage_paid) as total_wages,
+                   SUM(la.advance) as total_advance
+            FROM labourers l
+            LEFT JOIN labour_attendance la ON la.labourer_id = l.id
+                AND la.work_date BETWEEN %s AND %s
+            WHERE l.is_active = TRUE
+            GROUP BY l.id, l.name
+            ORDER BY l.name
+        """, (from_date, to_date))
+        report_data = cur.fetchall()
+
+    if report_data:
+        df_rep = pd.DataFrame(report_data)
+        total_wages = df_rep["total_wages"].sum()
+        total_adv = df_rep["total_advance"].sum()
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"Period: {from_date} to {to_date}", "")
+        c2.metric("Total Wages", f"₹{total_wages:.2f}")
+        c3.metric("Total Advances", f"₹{total_adv:.2f}")
+
+        df_rep.columns = ["Name", "Days Present", "Total Days", "Total Wages (₹)", "Total Advance (₹)"]
+        df_rep["Total Wages (₹)"] = df_rep["Total Wages (₹)"].apply(lambda x: f"₹{x:.2f}" if x else "₹0.00")
+        df_rep["Total Advance (₹)"] = df_rep["Total Advance (₹)"].apply(lambda x: f"₹{x:.2f}" if x else "₹0.00")
+        st.dataframe(df_rep, use_container_width=True, hide_index=True)
+    
+    # Daily wage expense log
+    st.markdown("#### 📅 Daily Wage Log")
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT la.work_date, l.name, la.days_worked, la.wage_paid,
+                   la.advance, la.payment_method, la.notes
+            FROM labour_attendance la
+            JOIN labourers l ON l.id = la.labourer_id
+            WHERE la.work_date BETWEEN %s AND %s
+            ORDER BY la.work_date DESC, l.name
+        """, (from_date, to_date))
+        daily_log = cur.fetchall()
+
+    if daily_log:
+        df_daily = pd.DataFrame(daily_log)
+        df_daily["work_date"] = pd.to_datetime(df_daily["work_date"]).dt.strftime("%d-%m-%Y")
+        st.dataframe(df_daily, use_container_width=True, hide_index=True)
+
+
+
+========================================================================================================================
+FILE: 04_Machines.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\pages\04_Machines.py
+RELATIVE_PATH: pages\04_Machines.py
+EXTENSION: .py
+========================================================================================================================
+
+"""Machine & Maintenance Management — Bharathi Oil Mill"""
+
+import streamlit as st
+import psycopg2.extras
+from datetime import date, timedelta
+import pandas as pd
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from database import get_db
+
+st.set_page_config(page_title="Machines – Bharathi Oil Mill", layout="wide")
+st.markdown("## ⚙️ Machine & Maintenance Management")
+st.markdown("---")
+
+STATUS_COLORS = {
+    "active": "#27ae60",
+    "maintenance": "#e67e22",
+    "breakdown": "#e74c3c",
+    "inactive": "#95a5a6",
+}
+STATUS_ICONS = {
+    "active": "✅", "maintenance": "🔧", "breakdown": "🔴", "inactive": "⚫"
+}
+TYPE_ICONS = {
+    "grain_milling": "🌾", "spice_grinding": "🌶", "dhal_splitting": "🫘",
+    "oil_extraction": "🫒", "oil_cake_grinding": "🟤", "wet_grinding": "💧",
+}
+
+tab_fleet, tab_add, tab_maint, tab_history = st.tabs(
+    ["🏭 Machine Fleet", "➕ Add Machine", "🔧 Log Maintenance", "📋 Maintenance History"])
+
+
+# ─── TAB 1: FLEET VIEW ────────────────────────────────────────────────────────
+with tab_fleet:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT m.*,
+                   COALESCE(SUM(mm.cost), 0) as total_maint_cost,
+                   MAX(mm.maintenance_date) as last_maint
+            FROM machines m
+            LEFT JOIN machine_maintenance mm ON mm.machine_id = m.id
+            GROUP BY m.id ORDER BY m.machine_type, m.machine_name
+        """)
+        machines = cur.fetchall()
+
+    # Summary
+    total = len(machines)
+    active = sum(1 for m in machines if m["status"] == "active")
+    in_maint = sum(1 for m in machines if m["status"] == "maintenance")
+    broken = sum(1 for m in machines if m["status"] == "breakdown")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Machines", total)
+    c2.metric("✅ Active", active)
+    c3.metric("🔧 In Maintenance", in_maint)
+    c4.metric("🔴 Breakdown", broken)
+
+    st.markdown("---")
+
+    # Group by type
+    machine_by_type = {}
+    for m in machines:
+        machine_by_type.setdefault(m["machine_type"], []).append(m)
+
+    for mtype, mlist in machine_by_type.items():
+        icon = TYPE_ICONS.get(mtype, "⚙️")
+        st.markdown(f"#### {icon} {mtype.replace('_', ' ').title()}")
+        for m in mlist:
+            status_col = STATUS_COLORS.get(m["status"], "#888")
+            status_icon = STATUS_ICONS.get(m["status"], "⚙️")
+            days_to_service = None
+            overdue = False
+            if m["next_service_date"]:
+                days_to_service = (m["next_service_date"] - date.today()).days
+                overdue = days_to_service < 0
+
+            with st.container():
+                col_name, col_status, col_maint, col_action = st.columns([3, 1.5, 2, 1.5])
+                col_name.markdown(f"**{m['machine_name']}**  \n"
+                                  f"<small>S/N: {m.get('serial_number') or '—'}</small>",
+                                  unsafe_allow_html=True)
+                col_status.markdown(
+                    f'<span style="color:{status_col};font-weight:600">{status_icon} {m["status"].upper()}</span>',
+                    unsafe_allow_html=True)
+                if days_to_service is not None:
+                    svc_text = f"⚠️ **OVERDUE {abs(days_to_service)}d**" if overdue else f"Service in {days_to_service}d"
+                    col_maint.markdown(svc_text)
+                else:
+                    col_maint.write("—")
+                new_status = col_action.selectbox("", list(STATUS_COLORS.keys()),
+                                                  index=list(STATUS_COLORS.keys()).index(m["status"]),
+                                                  key=f"sts_{m['id']}")
+                if new_status != m["status"]:
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        cur.execute("UPDATE machines SET status=%s WHERE id=%s",
+                                    (new_status, m["id"]))
+                    st.rerun()
+
+
+# ─── TAB 2: ADD MACHINE ───────────────────────────────────────────────────────
+with tab_add:
+    with st.form("add_machine"):
+        st.markdown("#### ➕ Add New Machine")
+        col1, col2 = st.columns(2)
+        with col1:
+            m_name = st.text_input("Machine Name *", placeholder="Oil Rotary #7 - Groundnut")
+            m_type = st.selectbox("Machine Type", list(TYPE_ICONS.keys()),
+                                  format_func=lambda x: TYPE_ICONS.get(x, "⚙️") + " " + x.replace("_", " ").title())
+            m_serial = st.text_input("Serial Number")
+        with col2:
+            m_purchase = st.date_input("Purchase Date", value=None)
+            m_next_svc = st.date_input("Next Service Date", value=None)
+            m_status = st.selectbox("Status", list(STATUS_COLORS.keys()))
+        m_notes = st.text_area("Notes", height=60)
+        if st.form_submit_button("💾 Add Machine", type="primary"):
+            if m_name:
+                with get_db() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO machines (machine_name, machine_type, serial_number,
+                            purchase_date, next_service_date, status, notes)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    """, (m_name, m_type, m_serial or None,
+                          m_purchase, m_next_svc, m_status, m_notes))
+                st.success(f"✅ Machine '{m_name}' added!")
+                st.rerun()
+            else:
+                st.error("Machine name is required.")
+
+
+# ─── TAB 3: LOG MAINTENANCE ───────────────────────────────────────────────────
+with tab_maint:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM machines ORDER BY machine_name")
+        all_machines = cur.fetchall()
+
+    with st.form("log_maint"):
+        st.markdown("#### 🔧 Log Maintenance Entry")
+        sel_machine = st.selectbox("Machine", all_machines,
+                                   format_func=lambda x: f"{TYPE_ICONS.get(x['machine_type'],'⚙️')} {x['machine_name']}")
+        col1, col2 = st.columns(2)
+        with col1:
+            maint_date = st.date_input("Maintenance Date", value=date.today())
+            maint_type = st.selectbox("Type", ["Routine Service", "Repair", "Part Replacement",
+                                               "Lubrication", "Cleaning", "Emergency", "Other"])
+            cost = st.number_input("Cost (₹)", min_value=0.0, value=0.0)
+        with col2:
+            technician = st.text_input("Technician / Vendor")
+            next_svc = st.date_input("Next Service Date", value=date.today() + timedelta(days=90))
+            new_status = st.selectbox("Machine Status After", list(STATUS_COLORS.keys()))
+        description = st.text_area("Description / Work Done *", height=80)
+
+        if st.form_submit_button("💾 Log Maintenance", type="primary"):
+            if description:
+                with get_db() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO machine_maintenance
+                            (machine_id, maintenance_date, maintenance_type, description,
+                             cost, technician, next_service_date)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    """, (sel_machine["id"], maint_date, maint_type, description,
+                          cost, technician or None, next_svc))
+                    cur.execute("""
+                        UPDATE machines SET status=%s, last_service_date=%s,
+                            next_service_date=%s WHERE id=%s
+                    """, (new_status, maint_date, next_svc, sel_machine["id"]))
+                st.success(f"✅ Maintenance logged for {sel_machine['machine_name']}")
+                st.rerun()
+            else:
+                st.error("Description is required.")
+
+
+# ─── TAB 4: MAINTENANCE HISTORY ───────────────────────────────────────────────
+with tab_history:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT mm.*, m.machine_name, m.machine_type
+            FROM machine_maintenance mm
+            JOIN machines m ON m.id = mm.machine_id
+            ORDER BY mm.maintenance_date DESC, mm.created_at DESC
+            LIMIT 200
+        """)
+        maint_history = cur.fetchall()
+
+    # Total costs
+    if maint_history:
+        total_cost = sum(r["cost"] for r in maint_history)
+        st.metric("Total Maintenance Cost (All Time)", f"₹{total_cost:,.2f}")
+
+        df_hist = pd.DataFrame(maint_history)
+        df_hist["maintenance_date"] = pd.to_datetime(df_hist["maintenance_date"]).dt.strftime("%d-%m-%Y")
+        df_hist["next_service_date"] = pd.to_datetime(df_hist["next_service_date"]).dt.strftime("%d-%m-%Y").fillna("—")
+        st.dataframe(
+            df_hist[["maintenance_date", "machine_name", "maintenance_type",
+                     "description", "cost", "technician", "next_service_date"]].rename(
+                columns={"maintenance_date": "Date", "machine_name": "Machine",
+                         "maintenance_type": "Type", "description": "Work Done",
+                         "cost": "Cost (₹)", "technician": "Technician",
+                         "next_service_date": "Next Service"}),
+            use_container_width=True, hide_index=True
+        )
+    else:
+        st.info("No maintenance records yet.")
+
+
+
+========================================================================================================================
+FILE: 05_Services.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\pages\05_Services.py
+RELATIVE_PATH: pages\05_Services.py
+EXTENSION: .py
+========================================================================================================================
+
+"""Services & Rate Management — Bharathi Oil Mill"""
+
+import streamlit as st
+import psycopg2.extras
+import pandas as pd
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from database import get_db
+
+st.set_page_config(page_title="Services – Bharathi Oil Mill", layout="wide")
+st.markdown("## ⚙️ Services & Rate Management")
+st.markdown("---")
+
+CAT_LABELS = {
+    "grain_milling": "🌾 Grain Milling",
+    "spice_grinding": "🌶 Spice Grinding",
+    "dhal_splitting": "🫘 Dhal Splitting",
+    "oil_extraction": "🫒 Oil Extraction",
+    "oil_cake_grinding": "🟤 Oil Cake Grinding",
+    "wet_grinding": "💧 Wet Grinding",
+}
+
+with get_db() as conn:
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM services ORDER BY category, name")
+    services = cur.fetchall()
+
+tab_view, tab_add, tab_edit = st.tabs(["📋 All Services", "➕ Add Service", "✏️ Edit Rates"])
+
+with tab_view:
+    if services:
+        df = pd.DataFrame(services)
+        df["category_label"] = df["category"].map(CAT_LABELS).fillna(df["category"])
+        df["status"] = df["is_active"].map({True: "✅ Active", False: "❌ Inactive"})
+        for cat, group in df.groupby("category"):
+            st.markdown(f"#### {CAT_LABELS.get(cat, cat)}")
+            disp = group[["name", "rate_per_kg", "unit", "status"]].copy()
+            disp.columns = ["Service Name", "Rate per kg (₹)", "Unit", "Status"]
+            disp["Rate per kg (₹)"] = disp["Rate per kg (₹)"].apply(lambda x: f"₹{x:.2f}")
+            st.dataframe(disp, use_container_width=True, hide_index=True)
+
+with tab_add:
+    with st.form("add_svc"):
+        st.markdown("#### ➕ Add New Service")
+        col1, col2 = st.columns(2)
+        with col1:
+            s_name = st.text_input("Service Name *")
+            s_cat = st.selectbox("Category", list(CAT_LABELS.keys()),
+                                 format_func=lambda x: CAT_LABELS.get(x, x))
+        with col2:
+            s_rate = st.number_input("Rate per kg (₹) *", min_value=0.0, value=5.0)
+            s_unit = st.selectbox("Unit", ["kg", "litre", "pcs"])
+        if st.form_submit_button("💾 Add Service", type="primary"):
+            if s_name:
+                with get_db() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO services (category, name, rate_per_kg, unit) VALUES (%s,%s,%s,%s)",
+                        (s_cat, s_name, s_rate, s_unit)
+                    )
+                st.success(f"✅ Service '{s_name}' added!")
+                st.rerun()
+
+with tab_edit:
+    sel_svc = st.selectbox("Select Service to Edit", services,
+                           format_func=lambda x: f"{CAT_LABELS.get(x['category'],x['category'])} → {x['name']}")
+    if sel_svc:
+        with st.form("edit_svc"):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_rate = st.number_input("New Rate (₹/kg)", value=float(sel_svc["rate_per_kg"]))
+            with col2:
+                new_active = st.checkbox("Active", value=bool(sel_svc["is_active"]))
+            if st.form_submit_button("💾 Update", type="primary"):
+                with get_db() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE services SET rate_per_kg=%s, is_active=%s, updated_at=NOW() WHERE id=%s",
+                        (new_rate, new_active, sel_svc["id"])
+                    )
+                st.success("✅ Updated!")
+                st.cache_data.clear()
+                st.rerun()
+
+
+
+========================================================================================================================
+FILE: 06_Reports.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\pages\06_Reports.py
+RELATIVE_PATH: pages\06_Reports.py
+EXTENSION: .py
+========================================================================================================================
+
+"""Reports & Analytics — Bharathi Oil Mill"""
+
+import streamlit as st
+import psycopg2.extras
+import pandas as pd
+from datetime import date, timedelta
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from database import get_db
+
+st.set_page_config(page_title="Reports – Bharathi Oil Mill", layout="wide")
+st.markdown("## 📊 Reports & Analytics")
+st.markdown("---")
+
+# Date filter
+col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
+with col_f1:
+    from_date = st.date_input("From", value=date.today().replace(day=1))
+with col_f2:
+    to_date = st.date_input("To", value=date.today())
+with col_f3:
+    st.markdown("<br>", unsafe_allow_html=True)
+    quick = st.selectbox("Quick", ["Custom", "Today", "This Week", "This Month", "Last Month"])
+    if quick == "Today":
+        from_date = to_date = date.today()
+    elif quick == "This Week":
+        from_date = date.today() - timedelta(days=date.today().weekday())
+        to_date = date.today()
+    elif quick == "This Month":
+        from_date = date.today().replace(day=1)
+        to_date = date.today()
+    elif quick == "Last Month":
+        first_this = date.today().replace(day=1)
+        to_date = first_this - timedelta(days=1)
+        from_date = to_date.replace(day=1)
+
+tab_summary, tab_bills, tab_service, tab_expenses = st.tabs(
+    ["📈 Summary", "🧾 All Bills", "🔍 Service Analytics", "💸 Expenses"])
+
+
+# ─── TAB 1: SUMMARY ──────────────────────────────────────────────────────────
+with tab_summary:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Revenue summary
+        cur.execute("""
+            SELECT 
+                COUNT(*) as total_bills,
+                SUM(CASE WHEN payment_status='paid' THEN total ELSE 0 END) as collected,
+                SUM(CASE WHEN payment_status='pending' THEN total ELSE 0 END) as pending,
+                SUM(total) as gross_total
+            FROM bills WHERE DATE(created_at) BETWEEN %s AND %s
+        """, (from_date, to_date))
+        rev = cur.fetchone()
+
+        # Labour cost
+        cur.execute("""
+            SELECT COALESCE(SUM(wage_paid + advance), 0) as total_labour
+            FROM labour_attendance WHERE work_date BETWEEN %s AND %s
+        """, (from_date, to_date))
+        labour = cur.fetchone()
+
+        # Maintenance cost
+        cur.execute("""
+            SELECT COALESCE(SUM(cost), 0) as total_maint
+            FROM machine_maintenance WHERE maintenance_date BETWEEN %s AND %s
+        """, (from_date, to_date))
+        maint = cur.fetchone()
+
+        # Expenses
+        cur.execute("""
+            SELECT COALESCE(SUM(amount), 0) as total_exp
+            FROM expenses WHERE expense_date BETWEEN %s AND %s
+        """, (from_date, to_date))
+        exp = cur.fetchone()
+
+    collected = float(rev["collected"] or 0)
+    pending = float(rev["pending"] or 0)
+    total_labour = float(labour["total_labour"] or 0)
+    total_maint = float(maint["total_maint"] or 0)
+    total_exp = float(exp["total_exp"] or 0)
+    gross = float(rev["gross_total"] or 0)
+    net_profit = collected - total_labour - total_maint - total_exp
+
+    st.markdown(f"#### Period: {from_date} → {to_date}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💰 Revenue Collected", f"₹{collected:,.2f}")
+    c2.metric("⏳ Pending", f"₹{pending:,.2f}")
+    c3.metric("📃 Total Bills", int(rev["total_bills"] or 0))
+    c4.metric("📈 Gross Revenue", f"₹{gross:,.2f}")
+
+    st.markdown("---")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("👷 Labour Cost", f"₹{total_labour:,.2f}")
+    c6.metric("⚙️ Maintenance Cost", f"₹{total_maint:,.2f}")
+    c7.metric("💸 Other Expenses", f"₹{total_exp:,.2f}")
+    c8.metric("🤑 Net Profit (est.)", f"₹{net_profit:,.2f}",
+              delta=f"{'▲' if net_profit > 0 else '▼'} from collected")
+
+    # Daily revenue chart
+    st.markdown("---")
+    st.markdown("#### 📅 Daily Revenue")
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT DATE(created_at) as day, SUM(total) as revenue, COUNT(*) as bills
+            FROM bills WHERE DATE(created_at) BETWEEN %s AND %s
+            AND payment_status='paid'
+            GROUP BY DATE(created_at) ORDER BY day
+        """, (from_date, to_date))
+        daily = cur.fetchall()
+    if daily:
+        df_daily = pd.DataFrame(daily)
+        df_daily["day"] = pd.to_datetime(df_daily["day"]).dt.strftime("%d %b")
+        st.bar_chart(df_daily.set_index("day")["revenue"])
+
+
+# ─── TAB 2: ALL BILLS ────────────────────────────────────────────────────────
+with tab_bills:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT b.bill_number, b.customer_name, b.customer_phone,
+                   b.total, b.payment_method, b.payment_status,
+                   b.reminder_date, b.bill_type,
+                   DATE(b.created_at) as bill_date
+            FROM bills b
+            WHERE DATE(b.created_at) BETWEEN %s AND %s
+            ORDER BY b.created_at DESC
+        """, (from_date, to_date))
+        bills = cur.fetchall()
+
+    if bills:
+        df_bills = pd.DataFrame(bills)
+        df_bills["bill_date"] = pd.to_datetime(df_bills["bill_date"]).dt.strftime("%d-%m-%Y")
+        df_bills["payment_status"] = df_bills["payment_status"].apply(
+            lambda x: "✅ Paid" if x == "paid" else "⏳ Pending")
+        df_bills["total"] = df_bills["total"].apply(lambda x: f"₹{x:.2f}")
+        df_bills = df_bills.rename(columns={
+            "bill_number": "Bill #", "customer_name": "Customer",
+            "customer_phone": "Phone", "total": "Total",
+            "payment_method": "Method", "payment_status": "Status",
+            "reminder_date": "Reminder", "bill_type": "Type",
+            "bill_date": "Date"
+        })
+        st.dataframe(df_bills, use_container_width=True, hide_index=True)
+    else:
+        st.info("No bills in this period.")
+
+
+# ─── TAB 3: SERVICE ANALYTICS ────────────────────────────────────────────────
+with tab_service:
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT bi.service_name,
+                   COUNT(*) as times,
+                   SUM(bi.quantity_kg) as total_kg,
+                   SUM(bi.amount) as total_revenue
+            FROM bill_items bi
+            JOIN bills b ON b.id = bi.bill_id
+            WHERE DATE(b.created_at) BETWEEN %s AND %s
+            GROUP BY bi.service_name
+            ORDER BY total_revenue DESC
+        """, (from_date, to_date))
+        svc_data = cur.fetchall()
+
+    if svc_data:
+        df_svc = pd.DataFrame(svc_data)
+        df_svc.columns = ["Service", "Times", "Total kg", "Revenue (₹)"]
+        df_svc["Revenue (₹)"] = df_svc["Revenue (₹)"].apply(lambda x: f"₹{x:.2f}")
+        df_svc["Total kg"] = df_svc["Total kg"].apply(lambda x: f"{x:.2f} kg")
+        st.dataframe(df_svc, use_container_width=True, hide_index=True)
+    else:
+        st.info("No service data in this period.")
+
+    # Oil cake summary
+    st.markdown("#### 🟤 Oil Cake Transactions")
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT op.seed_type, SUM(op.oil_cake_kg) as total_cake_kg,
+                   SUM(op.oil_cake_value) as total_cake_value
+            FROM oil_processing op
+            JOIN bills b ON b.id = op.bill_id
+            WHERE DATE(b.created_at) BETWEEN %s AND %s
+            GROUP BY op.seed_type ORDER BY total_cake_kg DESC
+        """, (from_date, to_date))
+        cake_data = cur.fetchall()
+    if cake_data:
+        df_cake = pd.DataFrame(cake_data)
+        df_cake.columns = ["Seed Type", "Oil Cake Collected (kg)", "Value (₹)"]
+        df_cake["Value (₹)"] = df_cake["Value (₹)"].apply(lambda x: f"₹{x:.2f}")
+        st.dataframe(df_cake, use_container_width=True, hide_index=True)
+
+
+# ─── TAB 4: EXPENSES ─────────────────────────────────────────────────────────
+with tab_expenses:
+    col_e1, col_e2 = st.columns([2, 1])
+    with col_e1:
+        st.markdown("#### 💸 Expense Log")
+        with get_db() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT * FROM expenses
+                WHERE expense_date BETWEEN %s AND %s
+                ORDER BY expense_date DESC
+            """, (from_date, to_date))
+            expenses = cur.fetchall()
+        if expenses:
+            df_exp = pd.DataFrame(expenses)
+            df_exp["expense_date"] = pd.to_datetime(df_exp["expense_date"]).dt.strftime("%d-%m-%Y")
+            df_exp["amount"] = df_exp["amount"].apply(lambda x: f"₹{x:.2f}")
+            st.dataframe(
+                df_exp[["expense_date", "category", "description", "amount", "payment_method"]],
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.info("No expenses in this period.")
+
+    with col_e2:
+        st.markdown("#### ➕ Add Expense")
+        with st.form("add_exp"):
+            exp_date = st.date_input("Date", value=date.today())
+            exp_cat = st.selectbox("Category", [
+                "Electricity", "Fuel", "Repairs", "Supplies", "Transport",
+                "Rent", "Misc", "Labour", "Maintenance"
+            ])
+            exp_desc = st.text_input("Description")
+            exp_amt = st.number_input("Amount (₹)", min_value=0.0, value=0.0)
+            exp_pay = st.radio("Payment", ["cash", "upi"], horizontal=True)
+            if st.form_submit_button("💾 Add", type="primary"):
+                if exp_amt > 0:
+                    with get_db() as conn:
+                        cur = conn.cursor()
+                        cur.execute("""
+                            INSERT INTO expenses (expense_date, category, description, amount, payment_method)
+                            VALUES (%s,%s,%s,%s,%s)
+                        """, (exp_date, exp_cat, exp_desc, exp_amt, exp_pay))
+                    st.success("✅ Expense recorded!")
+                    st.rerun()
+
+
+
+========================================================================================================================
+FILE: bill_printer.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\utils\bill_printer.py
+RELATIVE_PATH: utils\bill_printer.py
+EXTENSION: .py
+========================================================================================================================
+
+"""
+Bill HTML generation for Bharathi Oil Mill.
+Produces a styled, printable HTML string with an embedded QR code.
+"""
+
+from datetime import datetime
+from utils.qr_utils import generate_bill_qr
+
+
+MILL_INFO = {
+    "name": "Bharathi Oil Mill",
+    "tagline": "Traditional Cold-Press & Mill Services",
+    "address": "Your Address, City - 000000",
+    "phone": "+91 XXXXX XXXXX",
+    "gstin": "",
+}
+
+
+def generate_bill_html(bill: dict, items: list, oil_processing: list = None) -> str:
+    qr_b64 = generate_bill_qr({**bill, "items": items})
+
+    rows = ""
+    for item in items:
+        rows += f"""
+        <tr>
+            <td>{item['service_name']}</td>
+            <td style="text-align:center">{item['quantity_kg']:.3f} kg</td>
+            <td style="text-align:right">₹{item['rate_per_kg']:.2f}</td>
+            <td style="text-align:right">₹{item['amount']:.2f}</td>
+        </tr>"""
+
+    oil_rows = ""
+    if oil_processing:
+        for op in oil_processing:
+            direction = "← You Pay" if op['net_amount'] > 0 else "→ We Pay"
+            oil_rows += f"""
+            <tr style="background:#fffbea">
+                <td colspan="2">{op['seed_type']} Oil — {op['input_kg']:.3f} kg
+                    <br><small>Processing fee: ₹{op['processing_fee']:.2f} | 
+                    Oil cake {op['oil_cake_kg']:.3f} kg @ ₹{op['oil_cake_rate']:.2f} = ₹{op['oil_cake_value']:.2f}</small>
+                </td>
+                <td style="text-align:center">{direction}</td>
+                <td style="text-align:right">₹{abs(op['net_amount']):.2f}</td>
+            </tr>"""
+
+    created = bill.get('created_at', datetime.now())
+    if hasattr(created, 'strftime'):
+        date_str = created.strftime("%d %b %Y, %I:%M %p")
+    else:
+        date_str = str(created)
+
+    reminder_row = ""
+    if bill.get('reminder_date'):
+        reminder_row = f"""
+        <tr style="color:#e74c3c">
+            <td colspan="4"><strong>⏰ Payment Due By:</strong> {bill['reminder_date']}</td>
+        </tr>"""
+
+    status_color = "#27ae60" if bill.get('payment_status') == 'paid' else "#e74c3c"
+    status_text = (bill.get('payment_status') or 'paid').upper()
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family: 'Segoe UI', Arial, sans-serif; font-size:13px; color:#222; background:#fff; padding:16px; }}
+  .header {{ display:flex; justify-content:space-between; align-items:flex-start; border-bottom:2px solid #c0392b; padding-bottom:10px; margin-bottom:12px; }}
+  .mill-name {{ font-size:22px; font-weight:700; color:#c0392b; }}
+  .tagline {{ font-size:11px; color:#666; margin-top:2px; }}
+  .bill-meta {{ text-align:right; font-size:12px; }}
+  .bill-no {{ font-size:16px; font-weight:700; color:#2c3e50; }}
+  .status-badge {{ display:inline-block; padding:2px 10px; border-radius:12px; font-size:11px; font-weight:700; color:#fff; background:{status_color}; }}
+  table {{ width:100%; border-collapse:collapse; margin-top:10px; }}
+  th {{ background:#2c3e50; color:#fff; padding:7px 8px; text-align:left; font-size:12px; }}
+  td {{ padding:6px 8px; border-bottom:1px solid #eee; }}
+  .totals {{ margin-top:12px; text-align:right; }}
+  .totals table {{ width:auto; float:right; }}
+  .totals td {{ border:none; padding:3px 6px; }}
+  .grand-total {{ font-size:16px; font-weight:700; color:#c0392b; }}
+  .footer {{ clear:both; margin-top:16px; border-top:1px dashed #ccc; padding-top:8px; font-size:11px; color:#888; text-align:center; }}
+  .qr-section {{ text-align:center; margin-top:10px; }}
+  .qr-section img {{ border:1px solid #ddd; border-radius:4px; padding:4px; }}
+  .customer-box {{ background:#f8f9fa; border-radius:6px; padding:8px 12px; margin-bottom:10px; font-size:12px; }}
+  @media print {{
+    body {{ padding:0; }}
+    .no-print {{ display:none; }}
+  }}
+</style>
+</head>
+<body>
+<div class="header">
+  <div>
+    <div class="mill-name">🏭 {MILL_INFO['name']}</div>
+    <div class="tagline">{MILL_INFO['tagline']}</div>
+    <div style="font-size:11px;color:#555;margin-top:4px">{MILL_INFO['address']}<br>📞 {MILL_INFO['phone']}</div>
+  </div>
+  <div class="bill-meta">
+    <div class="bill-no">#{bill.get('bill_number','')}</div>
+    <div style="margin-top:4px">{date_str}</div>
+    <div style="margin-top:4px"><span class="status-badge">{status_text}</span></div>
+    <div style="margin-top:4px;font-size:11px">{(bill.get('payment_method') or 'cash').upper()}</div>
+  </div>
+</div>
+
+<div class="customer-box">
+  👤 <strong>{bill.get('customer_name') or 'Walk-in Customer'}</strong>
+  {'&nbsp;&nbsp;📞 ' + bill['customer_phone'] if bill.get('customer_phone') else ''}
+  {'<br>📝 ' + bill['notes'] if bill.get('notes') else ''}
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Service / Item</th>
+      <th style="text-align:center">Quantity</th>
+      <th style="text-align:right">Rate/kg</th>
+      <th style="text-align:right">Amount</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows}
+    {oil_rows}
+    {reminder_row}
+  </tbody>
+</table>
+
+<div class="totals">
+  <table>
+    <tr><td>Subtotal:</td><td><strong>₹{bill.get('subtotal',0):.2f}</strong></td></tr>
+    {"<tr><td>Discount:</td><td style='color:#e74c3c'>-₹" + f"{bill.get('discount',0):.2f}</td></tr>" if bill.get('discount',0) > 0 else ""}
+    <tr><td class="grand-total">TOTAL:</td><td class="grand-total">₹{bill.get('total',0):.2f}</td></tr>
+  </table>
+</div>
+
+<div class="qr-section">
+  <div style="font-size:11px;color:#888;margin-bottom:4px">Scan to verify bill</div>
+  <img src="data:image/png;base64,{qr_b64}" width="130" height="130" />
+</div>
+
+<div class="footer">
+  Thank you for choosing Bharathi Oil Mill! &nbsp;|&nbsp; This is a computer-generated bill.
+</div>
+</body>
+</html>"""
+    return html
+
+
+
+========================================================================================================================
+FILE: qr_utils.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\utils\qr_utils.py
+RELATIVE_PATH: utils\qr_utils.py
+EXTENSION: .py
+========================================================================================================================
+
+"""QR Code generation utilities for Bharathi Oil Mill bills."""
+
+import qrcode
+import json
+import io
+import base64
+from datetime import datetime
+
+
+def generate_bill_qr(bill_data: dict) -> str:
+    """
+    Generate a QR code for a bill and return as base64 PNG string.
+    
+    The QR encodes a compact JSON payload:
+      bill_number, date, customer, total, items (name + qty + amount)
+    """
+    payload = {
+        "app": "BharathaOilMill",
+        "bill": bill_data.get("bill_number", ""),
+        "date": bill_data.get("created_at", datetime.now()).strftime("%d-%m-%Y %H:%M") 
+                if hasattr(bill_data.get("created_at", ""), "strftime") 
+                else str(bill_data.get("created_at", "")),
+        "customer": bill_data.get("customer_name") or "Walk-in",
+        "phone": bill_data.get("customer_phone") or "",
+        "total": float(bill_data.get("total", 0)),
+        "payment": bill_data.get("payment_method") or "cash",
+        "status": bill_data.get("payment_status") or "paid",
+    }
+    if bill_data.get("items"):
+        payload["items"] = [
+            {
+                "s": item.get("service_name", ""),
+                "q": float(item.get("quantity_kg", 0)),
+                "a": float(item.get("amount", 0)),
+            }
+            for item in bill_data["items"]
+        ]
+
+    qr_text = json.dumps(payload, separators=(",", ":"))
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=6,
+        border=2,
+    )
+    qr.add_data(qr_text)
+    qr.make(fit=True)
+
+    img = qr.make_image(fill_color="#1a1a2e", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
+
+
+def qr_to_html_img(b64_string: str, size: int = 150) -> str:
+    """Return an <img> tag with embedded base64 QR PNG."""
+    return f'<img src="data:image/png;base64,{b64_string}" width="{size}" height="{size}" />'
+
+
+
+========================================================================================================================
+FILE: __init__.py
+PATH: C:\Users\udhay\Downloads\bharathi_oil_mill\bharathi_oil_mill\utils\__init__.py
+RELATIVE_PATH: utils\__init__.py
+EXTENSION: .py
+========================================================================================================================
+
+
+

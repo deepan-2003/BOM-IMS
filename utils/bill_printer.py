@@ -145,3 +145,82 @@ def generate_bill_html(bill: dict, items: list, oil_processing: list = None) -> 
 </body>
 </html>"""
     return html
+
+
+def generate_bill_pdf(bill: dict, items: list, oil_processing: list = None) -> bytes:
+    """Create a clean A4 PDF bill; returned as bytes for Streamlit download."""
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.units import mm
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=16*mm, leftMargin=16*mm,
+                            topMargin=14*mm, bottomMargin=14*mm)
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="MillTitle", parent=styles["Title"], fontSize=20,
+                              textColor=colors.HexColor("#17324d"), alignment=TA_CENTER,
+                              spaceAfter=3))
+    styles.add(ParagraphStyle(name="Subtle", parent=styles["Normal"], fontSize=8,
+                              textColor=colors.HexColor("#64748b"), alignment=TA_CENTER))
+    story = [Paragraph("BHARATHI OIL MILL", styles["MillTitle"]),
+             Paragraph("Traditional Milling • Spice Grinding • Cold-Press Oil", styles["Subtle"]),
+             Spacer(1, 8*mm)]
+    created = bill.get("created_at")
+    date_text = created.strftime("%d-%m-%Y %I:%M %p") if hasattr(created, "strftime") else str(created or "")
+    meta = [
+        ["Bill Number", str(bill.get("bill_number", "")), "Date", date_text],
+        ["Customer", str(bill.get("customer_name") or "Walk-in"), "Phone", str(bill.get("customer_phone") or "—")],
+        ["Payment", str(bill.get("payment_method") or "—").upper(), "Status", str(bill.get("payment_status") or "—").upper()],
+    ]
+    t = Table(meta, colWidths=[25*mm, 62*mm, 20*mm, 62*mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1),colors.HexColor("#f1f5f9")),
+        ("TEXTCOLOR",(0,0),(0,-1),colors.HexColor("#334155")),
+        ("TEXTCOLOR",(2,0),(2,-1),colors.HexColor("#334155")),
+        ("FONTNAME",(0,0),(-1,-1),"Helvetica"),
+        ("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),.35,colors.HexColor("#dbe3ec")),
+        ("PADDING",(0,0),(-1,-1),7),("VALIGN",(0,0),(-1,-1),"MIDDLE")
+    ]))
+    story += [t, Spacer(1, 7*mm)]
+    data = [["Description", "Quantity", "Rate (₹)", "Amount (₹)"]]
+    for item in items:
+        q = float(item.get("quantity_kg") or 0)
+        data.append([str(item.get("service_name") or "Service"),
+                     f"{q:g} kg", f"{float(item.get('rate_per_kg') or 0):,.2f}",
+                     f"{float(item.get('amount') or 0):,.2f}"])
+    for op in oil_processing or []:
+        data.append([f"{op.get('seed_type','Oil')} processing / cake buy-back",
+                     f"{float(op.get('input_kg') or 0):g} kg",
+                     "—", f"{abs(float(op.get('net_amount') or 0)):,.2f}"])
+    table = Table(data, colWidths=[83*mm, 30*mm, 27*mm, 29*mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#17324d")),
+        ("TEXTCOLOR",(0,0),(-1,0),colors.white),("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+        ("FONTSIZE",(0,0),(-1,-1),8),("GRID",(0,0),(-1,-1),.35,colors.HexColor("#dbe3ec")),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#f8fafc")]),
+        ("ALIGN",(1,1),(-1,-1),"RIGHT"),("PADDING",(0,0),(-1,-1),7),
+    ]))
+    story += [table, Spacer(1, 6*mm)]
+    subtotal = float(bill.get("subtotal") or 0)
+    discount = float(bill.get("discount") or 0)
+    total = float(bill.get("total") or 0)
+    totals = [["Subtotal", f"₹{subtotal:,.2f}"], ["Discount", f"− ₹{discount:,.2f}"],
+              ["TOTAL", f"₹{total:,.2f}"]]
+    tt = Table(totals, colWidths=[130*mm,39*mm], hAlign="RIGHT")
+    tt.setStyle(TableStyle([
+        ("ALIGN",(1,0),(1,-1),"RIGHT"),("FONTNAME",(0,0),(-1,-1),"Helvetica"),
+        ("FONTSIZE",(0,0),(-1,-1),9),("PADDING",(0,0),(-1,-1),6),
+        ("LINEABOVE",(0,2),(-1,2),1,colors.HexColor("#17324d")),
+        ("BACKGROUND",(0,2),(-1,2),colors.HexColor("#eaf1f7")),
+        ("FONTNAME",(0,2),(-1,2),"Helvetica-Bold"),("FONTSIZE",(0,2),(-1,2),12),
+    ]))
+    story += [tt, Spacer(1, 12*mm),
+              Paragraph("Thank you for choosing Bharathi Oil Mill!", styles["Subtle"])]
+    if bill.get("notes"):
+        story += [Spacer(1,3*mm), Paragraph(f"Notes: {bill['notes']}", styles["Normal"])]
+    doc.build(story)
+    return buffer.getvalue()

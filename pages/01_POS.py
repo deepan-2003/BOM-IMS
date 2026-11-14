@@ -11,7 +11,7 @@ import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from database import get_db, generate_bill_number
-from utils.bill_printer import generate_bill_html
+from utils.bill_printer import generate_bill_html, generate_bill_pdf
 from utils.qr_utils import generate_bill_qr
 
 st.set_page_config(page_title="POS – Bharathi Oil Mill", layout="wide")
@@ -59,6 +59,25 @@ if "cart" not in st.session_state:
 if "oil_proc" not in st.session_state:
     st.session_state.oil_proc = []      # oil-seed processing rows
 
+def show_saved_bill(payload):
+    if not payload:
+        return
+    b, items, ops = payload["bill"], payload["items"], payload["ops"]
+    st.success(f"Bill {b['bill_number']} saved successfully. Keep this panel open to print or download it.")
+    c1, c2, c3 = st.columns([1, 1, 2])
+    pdf_bytes = generate_bill_pdf(b, items, ops)
+    c1.download_button("⬇️ Download PDF Bill", pdf_bytes,
+                       file_name=f"{b['bill_number']}.pdf", mime="application/pdf",
+                       use_container_width=True, key=f"pdf_{b['bill_number']}")
+    html_bill = generate_bill_html(b, items, ops)
+    c2.download_button("🖨️ Print-ready HTML", html_bill,
+                       file_name=f"{b['bill_number']}.html", mime="text/html",
+                       use_container_width=True, key=f"html_{b['bill_number']}")
+    c3.caption("The saved bill remains available here after Streamlit reruns. Use the PDF for direct printing.")
+
+if st.session_state.get("last_saved_bill"):
+    show_saved_bill(st.session_state.last_saved_bill)
+
 tab_new, tab_pending, tab_scan = st.tabs(["🧾 New Bill", "⏳ Pending Bills", "📷 Scan QR"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -69,7 +88,21 @@ with tab_new:
 
     with col_left:
         # ── Service selector ──────────────────────────────────────────────────
-        st.markdown("### ➕ Add Services")
+        st.markdown("### 🌶 Chilli Combo – Quick Packages")
+        combo_qty = st.selectbox("Combo quantity", [0.25, 0.50, 0.75, 1.00],
+                                 format_func=lambda q: f"{q:g} kg")
+        combo_price = int(combo_qty * 200)
+        st.caption("Chilli + coriander + selected spices grinding package")
+        if st.button(f"➕ Add {combo_qty:g} kg Combo · ₹{combo_price}", key="add_chilli_combo",
+                     type="primary", use_container_width=True):
+            st.session_state.cart.append({
+                "service_id": None, "service_name": f"Chilli Combo ({combo_qty:g} kg)",
+                "quantity_kg": combo_qty, "rate_per_kg": 200.0,
+                "amount": float(combo_price), "notes": "Fixed-price chilli combo"
+            })
+            st.rerun()
+
+        st.markdown("### ➕ Add Individual Services")
         sel_cat = st.selectbox("Category", list(svc_by_cat.keys()),
                                format_func=lambda x: CAT_LABELS.get(x, x))
         cat_services = svc_by_cat.get(sel_cat, [])
@@ -305,24 +338,20 @@ with tab_new:
                     cur.execute("SELECT * FROM oil_processing WHERE bill_id=%s", (bill_id,))
                     saved_ops = [dict(r) for r in cur.fetchall()]
 
-                st.success(f"✅ Bill **{bill_no}** saved!")
+                st.session_state.last_saved_bill = {
+                    "bill": saved_bill, "items": saved_items, "ops": saved_ops
+                }
                 st.session_state.cart = []
                 st.session_state.oil_proc = []
-
-                # Show QR + print button
+                st.cache_data.clear()
+                st.success(f"✅ Bill **{bill_no}** saved!")
                 qr_b64 = generate_bill_qr({**saved_bill, "items": saved_items})
-                col_qr, col_btn = st.columns([1, 2])
+                col_qr, col_bill = st.columns([1, 3])
                 with col_qr:
                     st.image(f"data:image/png;base64,{qr_b64}", width=130, caption="Scan to verify")
-                with col_btn:
-                    bill_html = generate_bill_html(saved_bill, saved_items, saved_ops)
-                    st.download_button("🖨 Download / Print Bill",
-                                       data=bill_html,
-                                       file_name=f"{bill_no}.html",
-                                       mime="text/html",
-                                       use_container_width=True)
-                st.cache_data.clear()
-                st.rerun()
+                with col_bill:
+                    show_saved_bill(st.session_state.last_saved_bill)
+                st.info("Your bill is saved and will remain available in this POS session. Download or print it before starting another bill.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2: PENDING BILLS
@@ -415,8 +444,8 @@ with tab_scan:
 
                 bill_html = generate_bill_html(dict(b), [dict(i) for i in b_items],
                                                [dict(o) for o in b_ops])
-                st.download_button("🖨 Download Bill", data=bill_html,
-                                   file_name=f"{b['bill_number']}.html",
-                                   mime="text/html")
+                st.download_button("⬇️ Download PDF Bill",
+                                   data=generate_bill_pdf(dict(b), [dict(i) for i in b_items], [dict(o) for o in b_ops]),
+                                   file_name=f"{b['bill_number']}.pdf", mime="application/pdf")
             else:
                 st.error("Bill not found.")
