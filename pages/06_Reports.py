@@ -102,9 +102,34 @@ with get_db() as conn:
     cur.execute("""
         SELECT expense_date AS "Date", category AS "Category", description AS "Description",
                amount AS "Amount", payment_method AS "Payment Method", reference AS "Reference"
-        FROM expenses WHERE expense_date BETWEEN %s AND %s ORDER BY expense_date
+        FROM expenses WHERE expense_date BETWEEN %s AND %s
+          AND LOWER(COALESCE(category, '')) NOT IN ('labour', 'maintenance', 'machine maintenance')
+        ORDER BY expense_date
     """, (from_date, to_date))
-    export_expenses = pd.DataFrame(cur.fetchall())
+    manual_expenses = pd.DataFrame(cur.fetchall())
+    cur.execute("""
+        SELECT la.work_date AS "Date", 'Labour' AS "Category",
+               CONCAT(l.name, ' - wages and advance') AS "Description",
+               COALESCE(la.wage_paid, 0) + COALESCE(la.advance, 0) AS "Amount",
+               la.payment_method AS "Payment Method", CONCAT('Attendance #', la.id) AS "Reference"
+        FROM labour_attendance la JOIN labourers l ON l.id=la.labourer_id
+        WHERE la.work_date BETWEEN %s AND %s
+        ORDER BY la.work_date, l.name
+    """, (from_date, to_date))
+    export_labour = pd.DataFrame(cur.fetchall())
+    cur.execute("""
+        SELECT mm.maintenance_date AS "Date", 'Machine Maintenance' AS "Category",
+               CONCAT(m.machine_name, ' - ', COALESCE(mm.maintenance_type, 'Maintenance'), ': ', COALESCE(mm.description, '')) AS "Description",
+               COALESCE(mm.cost, 0) AS "Amount", '—' AS "Payment Method",
+               CONCAT('Maintenance #', mm.id) AS "Reference"
+        FROM machine_maintenance mm JOIN machines m ON m.id=mm.machine_id
+        WHERE mm.maintenance_date BETWEEN %s AND %s
+        ORDER BY mm.maintenance_date, m.machine_name
+    """, (from_date, to_date))
+    export_maintenance = pd.DataFrame(cur.fetchall())
+    export_expenses = pd.concat([manual_expenses, export_labour, export_maintenance], ignore_index=True)
+    if not export_expenses.empty:
+        export_expenses = export_expenses.sort_values("Date", ascending=False, kind="stable")
     cur.execute("""
         SELECT it.created_at AS "Date", i.item_name AS "Item",
                it.transaction_type AS "Movement", it.quantity AS "Quantity",
@@ -126,7 +151,8 @@ with get_db() as conn:
 
 excel_data = build_professional_excel({
     "Bills": export_bills, "Transactions": export_items,
-    "Expenses": export_expenses, "Stock Movements": export_stock,
+    "Expenses": export_expenses, "Labour Costs": export_labour,
+    "Machine Maintenance": export_maintenance, "Stock Movements": export_stock,
     "Daily Summary": export_daily
 })
 st.download_button("⬇️ Download Professional Excel Report",
@@ -174,6 +200,7 @@ with tab_summary:
         cur.execute("""
             SELECT COALESCE(SUM(amount), 0) as total_exp
             FROM expenses WHERE expense_date BETWEEN %s AND %s
+              AND LOWER(COALESCE(category, '')) NOT IN ('labour', 'maintenance', 'machine maintenance')
         """, (from_date, to_date))
         exp = cur.fetchone()
 
@@ -305,19 +332,36 @@ with tab_expenses:
         with get_db() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute("""
-                SELECT * FROM expenses
-                WHERE expense_date BETWEEN %s AND %s
-                ORDER BY expense_date DESC
-            """, (from_date, to_date))
+                SELECT expense_date AS date, category, description, amount, payment_method
+                FROM expenses WHERE expense_date BETWEEN %s AND %s
+                  AND LOWER(COALESCE(category, '')) NOT IN ('labour', 'maintenance', 'machine maintenance')
+                UNION ALL
+                SELECT la.work_date AS date, 'Labour' AS category,
+                       CONCAT(l.name, ' - wages and advance') AS description,
+                       COALESCE(la.wage_paid, 0) + COALESCE(la.advance, 0) AS amount,
+                       la.payment_method
+                FROM labour_attendance la JOIN labourers l ON l.id=la.labourer_id
+                WHERE la.work_date BETWEEN %s AND %s
+                UNION ALL
+                SELECT mm.maintenance_date AS date, 'Machine Maintenance' AS category,
+                       CONCAT(m.machine_name, ' - ', COALESCE(mm.maintenance_type, 'Maintenance'), ': ', COALESCE(mm.description, '')) AS description,
+                       COALESCE(mm.cost, 0) AS amount, '—' AS payment_method
+                FROM machine_maintenance mm JOIN machines m ON m.id=mm.machine_id
+                WHERE mm.maintenance_date BETWEEN %s AND %s
+                ORDER BY date DESC
+            """, (from_date, to_date, from_date, to_date, from_date, to_date))
             expenses = cur.fetchall()
         if expenses:
             df_exp = pd.DataFrame(expenses)
-            df_exp["expense_date"] = pd.to_datetime(df_exp["expense_date"]).dt.strftime("%d-%m-%Y")
-            df_exp["amount"] = df_exp["amount"].apply(lambda x: f"₹{x:.2f}")
+            df_exp["date"] = pd.to_datetime(df_exp["date"]).dt.strftime("%d-%m-%Y")
+            df_exp["amount"] = df_exp["amount"].apply(lambda x: f"₹{float(x or 0):,.2f}")
             st.dataframe(
-                df_exp[["expense_date", "category", "description", "amount", "payment_method"]],
+                df_exp[["date", "category", "description", "amount", "payment_method"]].rename(
+                    columns={"date": "Date", "category": "Category", "description": "Description",
+                             "amount": "Amount", "payment_method": "Payment Method"}),
                 use_container_width=True, hide_index=True
             )
+            st.caption("This combined view includes manual expenses, labour wages/advances, and machine maintenance. Labour and maintenance are read from their original records and are not duplicated in the expenses table.")
         else:
             st.info("No expenses in this period.")
 

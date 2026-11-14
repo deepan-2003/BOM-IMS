@@ -136,7 +136,7 @@ with tab_roster:
         cur.execute("SELECT * FROM labourers ORDER BY is_active DESC, name")
         all_labourers = cur.fetchall()
 
-    action = st.radio("Action", ["View Roster", "Add Labourer", "Edit Labourer"], horizontal=True)
+    action = st.radio("Action", ["View Roster", "Add Labourer", "Edit Labourer", "Delete Labourer"], horizontal=True)
 
     if action == "View Roster":
         if all_labourers:
@@ -193,6 +193,27 @@ with tab_roster:
                         """, (e_name, e_phone or None, e_wage, e_active, sel_lab["id"]))
                     st.success("✅ Updated!")
                     st.rerun()
+
+    elif action == "Delete Labourer":
+        st.warning("Deleting a labourer will deactivate the worker. Past attendance and wage records will be preserved for reports.")
+        deletable = [lab for lab in all_labourers if lab["is_active"]]
+        if not deletable:
+            st.info("There are no active labourers to delete.")
+        else:
+            sel_delete = st.selectbox(
+                "Select Labourer to Delete", deletable,
+                format_func=lambda x: f"{x['name']} ({x.get('phone') or 'No phone'})"
+            )
+            confirm_delete = st.checkbox(
+                f"I confirm that {sel_delete['name']} should be removed from the active roster.",
+                key=f"confirm_delete_lab_{sel_delete['id']}"
+            )
+            if st.button("🗑️ Delete Labourer", type="primary", disabled=not confirm_delete):
+                with get_db() as conn:
+                    cur = conn.cursor()
+                    cur.execute("UPDATE labourers SET is_active=FALSE WHERE id=%s", (sel_delete["id"],))
+                st.success(f"{sel_delete['name']} was removed from the active roster. Historical records are retained.")
+                st.rerun()
 
 
 # ─── TAB 3: REPORTS ───────────────────────────────────────────────────────────
